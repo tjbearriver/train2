@@ -1,0 +1,179 @@
+{
+  "categories": [
+    {
+      "name": "ACADEMIC",
+      "pairs": [
+        ["advisor", "student"],
+        ["teacher", "student"],
+        ["tutor", "student"],
+        ["subordinate", "supervisor"],
+        ["classmate", "classmate"]
+      ]
+    },
+    {
+      "name": "BUSINESS",
+      "pairs": [
+        ["borrower", "lender"],
+        ["employee", "employer"],
+        ["subordinate", "supervisor"],
+        ["client", "service provider"],
+        ["colleague", "colleague"],
+        ["partner", "partner"],
+        ["investee", "investor"]
+      ]
+    },
+    {
+      "name": "CRIME",
+      "pairs": [
+        ["accomplice", "accomplice"],
+        ["alleged perpetrator", "alleged victim"],
+        ["criminal", "victim"],
+        ["killer", "victim"],
+        ["client", "service provider"],
+        ["murderer", "victim"],
+        ["slave owner", "slave"]
+      ]
+    },
+    {
+      "name": "FAMILY",
+      "pairs": [
+        ["husband", "wife"],
+        ["father", "son"],
+        ["father", "daughter"],
+        ["mother", "son"],
+        ["mother", "daughter"],
+        ["brother", "sister"],
+        ["brother", "brother"],
+        ["sister", "sister"],
+        ["father", "adopted son"],
+        ["father", "adopted daughter"],
+        ["mother", "adopted son"],
+        ["mother", "adopted daughter"],
+        ["foster father", "foster son"],
+        ["foster father", "foster daughter"],
+        ["foster mother", "foster son"],
+        ["foster mother", "foster daughter"],
+        ["godfather", "godson"],
+        ["godfather", "goddaughter"],
+        ["godmother", "godson"],
+        ["godmother", "goddaughter"],
+        ["heir", "benefactor"],
+        ["legal guardian", "ward"]
+      ]
+    },
+    {
+      "name": "FRIENDSHIP",
+      "pairs": [
+        ["acquaintance", "acquaintance"],
+        ["ally", "ally"],
+        ["beneficiary", "benefactor"],
+        ["companion", "companion"],
+        ["friend", "friend"],
+        ["mentor", "mentee"],
+        ["neighbor", "neighbor"],
+        ["rescuer", "rescuee"]
+      ]
+    },
+    {
+      "name": "GOVERNMENT-POLITICS",
+      "pairs": [
+        ["clemency grantor", "clemency recipient"],
+        ["political advisor", "politician"],
+        ["political appointee", "appointer"],
+        ["political colleague", "political colleague"],
+        ["subordinate", "superior"],
+        ["donor", "recipient"],
+        ["diplomat", "diplomat"],
+        ["opponent", "opponent"]
+      ]
+    },
+    {
+      "name": "HOUSEHOLD",
+      "pairs": [
+        ["caregiver", "recipient"],
+        ["cohabitor", "cohabitor"],
+        ["landlord", "tenant"]
+      ]
+    },
+    {
+      "name": "INTIMATE",
+      "pairs": [
+        ["romantic partner", "romantic partner"],
+        ["boyfriend", "girlfriend"],
+        ["fiance", "fiance"]
+      ]
+    },
+    {
+      "name": "LEGAL",
+      "pairs": [
+        ["attorney", "client"],
+        ["prosecutor", "defendant"],
+        ["judge", "defendant"],
+        ["witness", "defendant"],
+        ["co-defendant", "co-defendant"],
+        ["investigator", "subject"],
+        ["plaintiff", "defendant"]
+      ]
+    },
+    {
+      "name": "MEDIA-ARTS",
+      "pairs": [
+        ["agent", "client"],
+        ["bandmate", "bandmate"],
+        ["biographer", "subject"],
+        ["director", "actor"],
+        ["coauthor", "coauthor"],
+        ["co-editor", "co-editor"],
+        ["collaborator", "collaborator"],
+        ["co-star", "co-star"],
+        ["interviewer", "interviewee"],
+        ["manager", "artist"],
+        ["artist", "muse"],
+        ["publicist", "client"],
+        ["patron", "artist"]
+      ]
+    },
+    {
+      "name": "MEDICAL",
+      "pairs": [
+        ["medical provider", "patient"]
+      ]
+    },
+    {
+      "name": "MILITARY",
+      "pairs": [
+        ["superior", "subordinate"],
+        ["fellow soldier", "fellow soldier"],
+        ["opponent", "opponent"]
+      ]
+    },
+    {
+      "name": "ORGANIZATIONAL",
+      "pairs": [
+        ["group leader", "group member"],
+        ["group member", "group member"]
+      ]
+    },
+    {
+      "name": "RELIGION",
+      "pairs": [
+        ["religious leader", "religious follower"]
+      ]
+    },
+    {
+      "name": "SPORTS",
+      "pairs": [
+        ["coach", "player"],
+        ["teammate", "teammate"],
+        ["trainer", "athlete"],
+        ["opponent", "opponent"]
+      ]
+    },
+    {
+      "name": "TRAVEL",
+      "pairs": [
+        ["travel companion", "travel companion"]
+      ]
+    }
+  ]
+}

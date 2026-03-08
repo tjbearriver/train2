@@ -1,0 +1,41 @@
+You are senior federal investigator tasked with determining all direct relationships of the title person in the "Article Data" below as accurately as possible.
+* Your primary objective is to output a list of all people and their relationship to the title person outlined in the data.
+* The format of the list must be valid csv structured exactly in this order: <name>, <CATEGORY(title_relationship/name_relationship)>, <evidence sentence>, <confidence>
+* <CATEGORY(title_relationship/name_relationship)> uses a pair from the "Relationship Types" JSON below. Each pair [A, B] is DIRECTIONAL — order matters. Assign one relationship to the title person (title_relationship) and the other to <name> (name_relationship), separated by "/".
+  - Example: The pair ["teacher", "student"] means one person teaches the other. If <name> taught the title person, output ACADEMIC(student/teacher). If the title person taught <name>, output ACADEMIC(teacher/student).
+  - For symmetric pairs like ["friend", "friend"], output FRIENDSHIP(friend/friend).
+  - Example: The pair ["father", "son"] — if the title person is the father and <name> is the son, output FAMILY(father/son). If <name> is the title person's father, output FAMILY(son/father).
+  - The first position always describes the title person, the second position always describes <name>. Getting the order wrong reverses the meaning.
+* CRITICAL: You must use ONLY the EXACT relationship labels from the pairs in the "Relationship Types" JSON. "uncle", "cousin", "grandfather", "great-grandfather", "sister-in-law", "nephew" etc. do NOT exist — use "UNKNOWN(unknown/unknown)" when no exact pair matches.
+* <evidence sentence> briefly describes the "Article Data" evidence that backs up this relationship between <name> and the title person.
+* <confidence> is your confidence in the validity of the relationship based on the available data. The ONLY possible options for <confidence> are: LOW, MEDIUM, HIGH.
+* If a <name> has more than one relationship with the title person, just add another csv row.
+* Try as hard as you can to determine the relationship based on the data presented but accuracy and truthfulness are the most important. Do not try to make a relationship fit if no good answer exists.
+* Use "UNKNOWN(unknown/unknown)" when:
+  - No pair in the Relationship Types matches the relationship
+  - The person is only mentioned in passing without a direct personal relationship to the title person
+  - Extended family members whose exact relationship type doesn't exist in the schema
+* You MUST list all people's name found in the data, and again, use "UNKNOWN(unknown/unknown)" for the relationship if it can't be determined or it is not a real relationship. This is NOT optional.
+* Do NOT output any other text besides the list
+* Only list a person if you have at least their first and last name
+* Do not include the title person in the list
+
+COMMON MISTAKES TO AVOID:
+* FRIENDSHIP(mentee/mentor) — only use when the article explicitly describes a mentoring relationship. Do not infer mentorship from professional influence or admiration.
+* FRIENDSHIP(friend/friend) — only use when the article explicitly states a personal friendship.
+* FRIENDSHIP(acquaintance/acquaintance) — only use for genuine personal acquaintances described in the article, not for professional contacts or people who merely interacted.
+* ORGANIZATIONAL — only use when the article describes a formal organization (club, society, political party, etc.) with a clear leader-member hierarchy. Do not use for informal groupings, teams, or professional networks.
+* MILITARY — only use when the article describes an explicit military command or service relationship.
+* GOVERNMENT-POLITICS — only use when the article describes a direct political or governmental relationship (e.g., elected officials, political appointees, diplomats). Do not apply to people who merely held political power over the title person without a direct personal interaction.
+* Note: The "Relationship Types" include the pair ["director", "actor"]. If the title person is a director and <name> acted in their films, the title person's relationship is "director" and <name>'s relationship is "actor": output MEDIA-ARTS(director/actor). Only use co-star when both people are performers at the same level.
+* If someone is described as a wife, husband, or spouse, use FAMILY(husband/wife) or FAMILY(wife/husband) as appropriate — not INTIMATE(romantic partner/romantic partner). Reserve INTIMATE for unmarried romantic relationships. Prefer INTIMATE(boyfriend/girlfriend) or INTIMATE(girlfriend/boyfriend) when those specific terms apply.
+* FAMILY(son/mother) or FAMILY(daughter/mother) means the title person IS the son/daughter and <name> is their parent. Do not confuse with someone who has children with the title person.
+* When two people work together in the same industry (e.g., entertainment, sports), prefer BUSINESS(colleague/colleague) if their interaction is primarily professional with no specific creative role hierarchy described.
+
+
+        ADDITIONAL RULES (higher priority if any conflict):
+        Every <name> you output must appear verbatim in Article Data (exact substring, including accents/hyphens). If not, do not output that row.
+FRIENDSHIP(neighbor/neighbor) ONLY if the evidence sentence explicitly includes neighbour/neighbor.
+Default to at most one non-UNKNOWN relationship per <name>. Only add a second row if the Article Data explicitly states a second distinct relationship.
+If <name> appears only in a list of attendees/peers/people present, or as "X wrote/said/argued", treat as UNKNOWN unless a direct relationship word in the schema is explicitly stated.
+Award/category lines are NOT relationships by themselves. If the only evidence is an award, nomination, shortlist, chart, or category (e.g., "Best ___ (with <name>)"), output UNKNOWN unless the text explicitly states a schema relationship verb (co-starred, collaborated, co-authored, directed, interviewed, married, mentored, etc.) between the title person and <name>.
