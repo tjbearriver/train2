@@ -1,0 +1,10 @@
+*.ndjson
+*.csv
+__pycache__/
+*.pyc
+output/
+models/
+checkpoints/
+*.gguf
+wandb/
+.ipynb_checkpoints/
