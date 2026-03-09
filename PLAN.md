@@ -194,6 +194,79 @@ Run on ~50 eval articles (small enough to finish quickly, large enough for signa
 
 ---
 
+## Phase 8: Dataset Size Ablation Study
+
+Trained Qwen3-8B with 100, 500, and 1000 articles (from the same 4726-example pool) to find the minimum viable dataset size. All runs used the same 50-sample eval set and identical hyperparameters.
+
+### Ablation Results (Qwen3-8B, varying dataset size)
+
+| Articles | Train Examples | Train Loss | Train Time | Name F1 | Tuple F1 | Name P/R | Tuple P/R |
+|----------|---------------|------------|------------|---------|----------|----------|-----------|
+| 100 | 100 | 0.215 | 17.1 min | 54.2% | 26.3% | 44.3% / 70.0% | 21.5% / 34.0% |
+| 500 | 500 | 0.143 | 86.0 min | 80.5% | 60.3% | 77.3% / 83.9% | 58.0% / 62.9% |
+| 1000 | 1000 | 0.112 | 175.4 min | 86.1% | 71.2% | 84.7% / 87.6% | 70.0% / 72.4% |
+| 4726 (full) | 4726 | 0.081 | 13.8 hr | 89.4% | 77.9% | 87.8% / 91.1% | 76.5% / 79.4% |
+
+### Ablation Analysis
+- **100→500 articles**: Largest jump — Name F1 +26.3pp, Tuple F1 +34.0pp. The 100-art model hallucinates heavily (FP=1004 tuple false positives vs 369 at 500).
+- **500→1000 articles**: Solid improvement — Name F1 +5.6pp, Tuple F1 +10.9pp. Precision and recall both improve.
+- **1000→4726 articles**: Diminishing returns — Name F1 +3.3pp, Tuple F1 +6.7pp. The 1000-art model already captures most of the pattern.
+- **Recommendation**: 500 articles is the minimum viable size for reasonable quality. 1000 articles reaches ~91% of full-run performance at ~2% of training time.
+
+### Adapter Locations
+- `output/ablation_100art/lora_adapter/`
+- `output/ablation_500art/lora_adapter/`
+- `output/ablation_1000art/lora_adapter/`
+
+---
+
+## Phase 9: Cross-Model Comparison (1000 articles)
+
+Training the same 1000-article subset across different model architectures to compare quality and training efficiency.
+
+### Models Under Test
+
+| Model | HuggingFace ID | Architecture | Params | Type |
+|-------|---------------|--------------|--------|------|
+| Qwen3-8B | `unsloth/Qwen3-8B-bnb-4bit` | Qwen3ForCausalLM | ~8B | Text-only |
+| Qwen3.5-4B | `unsloth/Qwen3.5-4B` | Qwen3_5ForConditionalGeneration | ~4.6B | VLM (text+vision) |
+| Qwen3.5-9B | `unsloth/Qwen3.5-9B` | Qwen3_5ForConditionalGeneration | ~9B | VLM — OOM on 16GB |
+
+### Cross-Model Results (1000 articles, same eval set)
+
+| Model | Train Loss | Train Time | Name F1 | Tuple F1 | VRAM | Notes |
+|-------|-----------|------------|---------|----------|------|-------|
+| Qwen3-8B | 0.112 | 175.4 min | 86.1% | 71.2% | ~15.4 GB | Text-only, pre-quantized 4-bit |
+| Qwen3.5-4B | _(running)_ | _(running)_ | — | — | ~14.6 GB | VLM with vision encoder overhead |
+| Qwen3.5-9B | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion OOMs |
+
+### Adapter Locations
+- Qwen3-8B (1000-art): `output/ablation_1000art/lora_adapter/`
+- Qwen3.5-4B (1000-art): `output/1000art_qwen35_4b/lora_adapter/`
+
+### Running Models
+To load a fine-tuned adapter for inference:
+```python
+from unsloth import FastLanguageModel
+from peft import PeftModel
+
+# For Qwen3-8B
+model, tokenizer = FastLanguageModel.from_pretrained(
+    "unsloth/Qwen3-8B-bnb-4bit", max_seq_length=8192, load_in_4bit=True,
+)
+model = PeftModel.from_pretrained(model, "output/ablation_1000art/lora_adapter")
+FastLanguageModel.for_inference(model)
+
+# For Qwen3.5-4B
+model, tokenizer = FastLanguageModel.from_pretrained(
+    "unsloth/Qwen3.5-4B", max_seq_length=8192, load_in_4bit=True,
+)
+model = PeftModel.from_pretrained(model, "output/1000art_qwen35_4b/lora_adapter")
+FastLanguageModel.for_inference(model)
+```
+
+---
+
 ## Decisions Made
 
 1. **Max sequence length**: 8192 (reduced from planned 16384 due to OOM). Covers 61% of golden articles. Articles that don't fit are excluded (not truncated).
