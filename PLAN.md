@@ -11,7 +11,7 @@ Distill a frontier-LLM-quality relationship extraction pipeline into a local ~7B
 | GPU | RTX 5070 Ti, 16GB VRAM |
 | CPU | 2× AMD EPYC 7532 (128 threads total) |
 | RAM | 256 GB |
-| CUDA | 13.0 |
+| CUDA | 12.0 (toolkit 12.8) |
 
 ---
 
@@ -116,7 +116,7 @@ Run on ~50 eval articles (small enough to finish quickly, large enough for signa
 | LoRA alpha | 64 | alpha = r for stable scaling |
 | LoRA target modules | q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj | Full attention + MLP for maximum capacity |
 | Quantization | 4-bit NF4 (QLoRA) | Fits in 16GB with room for gradients |
-| Max sequence length | 16384 | Covers 93% of golden articles without truncation |
+| Max sequence length | 8192 | Covers ~61% of golden articles; 16384 caused OOM |
 | Batch size | 1 | 16GB constraint |
 | Gradient accumulation | 16 | Effective batch size = 16 |
 | Learning rate | 2e-4 | Standard for QLoRA |
@@ -128,36 +128,75 @@ Run on ~50 eval articles (small enough to finish quickly, large enough for signa
 | Gradient checkpointing | Yes (unsloth) | Saves VRAM |
 
 ### Context Length & Filtering
-- Median article is ~17K chars ≈ ~4K tokens. P90 is ~56K chars ≈ ~14K tokens.
-- With `max_seq_length=16384`, 93.2% of golden articles fit (9,250 of 9,928).
-- **Strategy**: Filter out articles that exceed max_seq_length rather than truncating. This avoids training on incomplete data that would teach the model to produce partial relationship lists.
-- The ~7% filtered articles are disproportionately long (biographies of very notable people) — the model will still encounter similar content at inference time, just without specialized training on those particular examples.
+- Initial plan: `max_seq_length=16384` covering 93% of articles.
+- **Actual**: Reduced to `max_seq_length=8192` due to OOM at 16384 on 16GB VRAM.
+- Token length distribution (full conversations): median 7029, mean 7701, P90 12821, P95 14186.
+- At 8192 limit: 61.2% of golden articles fit → 4,726 train / 526 eval (4,675 filtered out).
+- **Strategy**: Filter out articles that exceed max_seq_length rather than truncating.
 
-### Estimated Training Time
-- ~8,325 training examples (90% of 9,250 that fit) × 3 epochs = ~24,975 steps (with grad accum 16 → ~1,561 optimizer steps).
-- At ~3-6 sec/step on RTX 5070 Ti with 16K context: **~3–5 hours estimated**.
+### Actual Training Results
+- **Training time**: 13.8 hours (49,660 seconds)
+- **Total steps**: 886 (4,726 examples × 3 epochs ÷ 16 grad accum)
+- **Step time**: ~54–58 seconds/step
+- **Final train loss**: 0.0809 (converged to ~0.046 in final steps)
+- **VRAM usage**: 15.4–15.8 GB (tight but stable, 100% GPU utilization)
+- **Checkpoints**: Saved at steps 200, 400, 600
+- **LoRA adapter**: `output/lora_adapter/`
 
 ---
 
 ## Phase 6: Post-Training Evaluation
 
-Re-run the same eval metrics from Phase 4 on the fine-tuned model:
-- Compare exact match, name recall, relationship accuracy, format compliance.
-- Generate a side-by-side comparison report.
+### Results (49 eval samples, 809 golden relationships)
+
+#### General
+| Metric | Base Qwen3-8B | Fine-tuned |
+|--------|---------------|------------|
+| Format compliance | 32.7% | **100.0%** |
+| Avg time/sample | 88.7s | **47.3s** |
+| Total predicted | 89 | 839 |
+
+#### Name-level matching
+| Metric | Base Qwen3-8B | Fine-tuned |
+|--------|---------------|------------|
+| **Precision** | 7.9% | **87.8%** |
+| **Recall** | 0.9% | **91.1%** |
+| **F1** | 1.6% | **89.4%** |
+| True Positives | 7 | 737 |
+| False Positives | 82 | 102 |
+| False Negatives | 802 | 72 |
+
+#### Name+Relationship tuple matching
+| Metric | Base Qwen3-8B | Fine-tuned |
+|--------|---------------|------------|
+| **Precision** | 3.4% | **76.5%** |
+| **Recall** | 0.4% | **79.4%** |
+| **F1** | 0.7% | **77.9%** |
+| True Positives | 3 | 642 |
+| False Positives | 86 | 197 |
+| False Negatives | 806 | 167 |
+
+#### Analysis
+- Of 839 fine-tuned predictions, 197 (23.5%) are false positive tuples — the model identifies the right person but assigns the wrong relationship category, or hallucinates entities.
+- Of those 197 FP tuples, 102 are completely wrong names (not in golden set) and 95 have the right name but wrong relationship type (737 name matches − 642 tuple matches).
+- 167 golden tuples are missed entirely (false negatives), mostly from articles with many relationships where the model generates slightly fewer than the golden set.
 
 ---
 
 ## Phase 7: Export for Inference
 
-- Merge LoRA weights back into base model.
-- Save as GGUF (Q4_K_M or Q5_K_M) for fast inference with llama.cpp or vLLM.
-- The merged + quantized model will be ~5GB, enabling fast batch inference over 2M articles.
+- Merged LoRA weights into base model on CPU (8B fp16 doesn't fit in 16GB VRAM alongside adapter).
+- Converted to GGUF F16 via `llama.cpp/convert_hf_to_gguf.py`, then quantized with `llama-quantize`.
+- **Output files**:
+  - `output/gguf/model-f16.gguf` — 15.26 GB
+  - `output/gguf/model-Q5_K_M.gguf` — 5.45 GB
+  - `output/lora_adapter/` — LoRA adapter weights
 
 ---
 
 ## Decisions Made
 
-1. **Max sequence length**: 16384 — covers 93% of golden articles. Articles that don't fit are excluded from training (not truncated).
+1. **Max sequence length**: 8192 (reduced from planned 16384 due to OOM). Covers 61% of golden articles. Articles that don't fit are excluded (not truncated).
 2. **Train/eval split**: 90/10 (standard).
 3. **Model**: Qwen3-8B.
 4. **Output format**: `name, CATEGORY(title_role/name_role), evidence sentence` — no confidence column. Model generates its own evidence sentences.
