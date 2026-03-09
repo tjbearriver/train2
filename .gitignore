@@ -8,3 +8,5 @@ checkpoints/
 *.gguf
 wandb/
 .ipynb_checkpoints/
+.venv/
+unsloth_compiled_cache/

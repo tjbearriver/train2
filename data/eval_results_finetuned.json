@@ -1,0 +1,18 @@
+{
+  "total_samples": 50,
+  "format_valid": 49,
+  "total_golden_rels": 809,
+  "total_predicted_rels": 839,
+  "name_matches": 737,
+  "exact_matches": 642,
+  "summary": {
+    "samples_evaluated": 49,
+    "format_compliance": 1.0,
+    "avg_name_recall": 0.9473247900152899,
+    "avg_exact_match_rate": 0.7859018788506312,
+    "overall_name_recall": 0.9110012360939431,
+    "overall_exact_match": 0.7935723114956736,
+    "avg_time_per_sample": 47.30612244897959
+  },
+  "per_sample_count": 49
+}

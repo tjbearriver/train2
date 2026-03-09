@@ -11,7 +11,7 @@ from pathlib import Path
 
 SEED = 42
 TRAIN_RATIO = 0.9
-MAX_SEQ_TOKENS_ESTIMATE = 16384
+MAX_SEQ_TOKENS_ESTIMATE = 8192
 CHARS_PER_TOKEN = 4  # rough estimate
 
 RELATIONSHIP_PATTERN = re.compile(r"^[A-Z\-]+ *\([^/]+/[^)]+\)$")

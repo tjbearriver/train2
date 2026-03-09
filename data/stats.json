@@ -1,10 +1,10 @@
 {
   "total_golden_qids": 9927,
   "articles_found": 9927,
-  "filtered_too_long": 1353,
-  "total_examples": 8574,
-  "train_count": 7716,
-  "eval_count": 858,
-  "max_seq_tokens": 16384,
+  "filtered_too_long": 4675,
+  "total_examples": 5252,
+  "train_count": 4726,
+  "eval_count": 526,
+  "max_seq_tokens": 8192,
   "seed": 42
 }

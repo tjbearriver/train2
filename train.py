@@ -5,11 +5,10 @@ import json
 import time
 from pathlib import Path
 
-from datasets import Dataset
-from transformers import TrainingArguments
-from trl import SFTTrainer
 from unsloth import FastLanguageModel
-from unsloth.chat_templates import get_chat_template, train_on_responses_only
+from unsloth.chat_templates import train_on_responses_only
+from datasets import Dataset
+from trl import SFTConfig, SFTTrainer
 
 BASE_DIR = Path(__file__).resolve().parent
 TRAIN_PATH = BASE_DIR / "data" / "train.json"
@@ -17,7 +16,7 @@ CHECKPOINT_DIR = BASE_DIR / "checkpoints"
 OUTPUT_DIR = BASE_DIR / "output"
 
 BASE_MODEL = "unsloth/Qwen3-8B-bnb-4bit"
-MAX_SEQ_LENGTH = 16384
+MAX_SEQ_LENGTH = 8192
 
 # QLoRA config
 LORA_R = 64
@@ -63,8 +62,6 @@ def main():
         load_in_4bit=True,
     )
 
-    tokenizer = get_chat_template(tokenizer, chat_template="qwen-3")
-
     print("\n=== Adding LoRA adapters ===")
     model = FastLanguageModel.get_peft_model(
         model,
@@ -85,7 +82,7 @@ def main():
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=str(CHECKPOINT_DIR),
         num_train_epochs=EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
@@ -102,13 +99,15 @@ def main():
         report_to="none",
         max_grad_norm=1.0,
         dataloader_num_workers=4,
+        max_length=MAX_SEQ_LENGTH,
+        eos_token=None,
     )
 
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
-        max_seq_length=MAX_SEQ_LENGTH,
+        processing_class=tokenizer,
     )
 
     # Train only on assistant responses

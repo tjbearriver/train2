@@ -1,18 +1,18 @@
 {
   "total_samples": 50,
   "format_valid": 16,
-  "total_golden_rels": 1538,
-  "total_predicted_rels": 143,
-  "name_matches": 49,
-  "exact_matches": 21,
+  "total_golden_rels": 809,
+  "total_predicted_rels": 89,
+  "name_matches": 7,
+  "exact_matches": 3,
   "summary": {
-    "samples_evaluated": 50,
-    "format_compliance": 0.32,
-    "avg_name_recall": 0.094138653948627,
-    "avg_exact_match_rate": 0.04376061810088519,
-    "overall_name_recall": 0.03185955786736021,
-    "overall_exact_match": 0.013654096228868661,
-    "avg_time_per_sample": 90.264
+    "samples_evaluated": 49,
+    "format_compliance": 0.32653061224489793,
+    "avg_name_recall": 0.02433281004709576,
+    "avg_exact_match_rate": 0.014390371533228676,
+    "overall_name_recall": 0.00865265760197775,
+    "overall_exact_match": 0.003708281829419036,
+    "avg_time_per_sample": 88.74693877551022
   },
-  "per_sample_count": 50
+  "per_sample_count": 49
 }

@@ -24,13 +24,15 @@ from unsloth import FastLanguageModel
 BASE_DIR = Path(__file__).resolve().parent
 EVAL_PATH = BASE_DIR / "data" / "eval.json"
 BASE_MODEL = "unsloth/Qwen3-8B-bnb-4bit"
-MAX_SEQ_LENGTH = 16384
+MAX_SEQ_LENGTH = 8192
 
 REL_PATTERN = re.compile(r"^([A-Z\-]+)\(([^/]+)/([^)]+)\)$")
 
 
 def parse_csv_output(text: str) -> list[dict]:
     """Parse model CSV output into list of {name, relationship} dicts."""
+    # Strip Qwen3 think blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     results = []
     for line in text.strip().split("\n"):
         line = line.strip()
@@ -179,12 +181,6 @@ def main():
 
     if args.adapter:
         print(f"Loading adapter: {args.adapter}")
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=64,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-            lora_alpha=64,
-        )
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, args.adapter)
 
