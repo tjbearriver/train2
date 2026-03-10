@@ -196,7 +196,7 @@ Run on ~50 eval articles (small enough to finish quickly, large enough for signa
 
 ## Phase 8: Dataset Size Ablation Study
 
-Trained Qwen3-8B with 100, 500, and 1000 articles (from the same 4726-example pool) to find the minimum viable dataset size. All runs used the same 50-sample eval set and identical hyperparameters.
+Trained Qwen3-8B (`unsloth/Qwen3-8B-bnb-4bit`) with 100, 500, and 1000 articles (subsampled from the 4,726-article training pool, seed=42) to find the minimum viable dataset size. The full training set contains 4,726 articles. All runs used the same 50-sample eval set (from 526-article eval pool) and identical hyperparameters (3 epochs, batch=1, grad_accum=16, lr=2e-4, max_seq=8192).
 
 ### Ablation Results (Qwen3-8B, varying dataset size)
 
@@ -229,26 +229,33 @@ Training the same 1000-article subset across different model architectures to co
 | Model | HuggingFace ID | Architecture | Params | Type |
 |-------|---------------|--------------|--------|------|
 | Qwen3-8B | `unsloth/Qwen3-8B-bnb-4bit` | Qwen3ForCausalLM | ~8B | Text-only |
+| Gemma3-4B | `unsloth/gemma-3-4b-it-bnb-4bit` | Gemma3ForConditionalGeneration | ~4.4B | VLM (text+vision) |
 | Qwen3.5-4B | `unsloth/Qwen3.5-4B` | Qwen3_5ForConditionalGeneration | ~4.6B | VLM (text+vision) |
 | Qwen3.5-9B | `unsloth/Qwen3.5-9B` | Qwen3_5ForConditionalGeneration | ~9B | VLM — OOM on 16GB |
 
 ### Cross-Model Results (1000 articles, same eval set)
 
+All models trained on the same 1000-article subset (subsampled from the 4,726-article training pool, seed=42). Evaluated on the same 50-sample eval set (from 526-article eval pool). The full Qwen3-8B run used all 4,726 training articles — all other runs below used 1,000.
+
 | Model | Train Loss | Train Time | Name F1 | Tuple F1 | VRAM | Notes |
 |-------|-----------|------------|---------|----------|------|-------|
-| Qwen3-8B | 0.112 | 175.4 min | 86.1% | 71.2% | ~15.4 GB | Text-only, pre-quantized 4-bit |
-| Qwen3.5-4B | 0.068 | 669.7 min (11.16 hr) | **86.6%** | **71.7%** | ~14.6 GB | VLM, 4× slower per step (~228s vs ~54s) |
-| Qwen3.5-9B | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion peak ~15.3 GB OOMs on 16GB |
+| Qwen3-8B (1000 art) | 0.112 | 175.4 min | 86.1% | 71.2% | ~15.4 GB | Text-only, pre-quantized 4-bit, ~54s/step |
+| Qwen3-8B (4726 art) | 0.081 | 13.8 hr | 89.4% | 77.9% | ~15.4 GB | Full dataset, same model |
+| Gemma3-4B (1000 art) | 0.126 | 257.9 min (4.30 hr) | 84.0% | 66.3% | ~15.5 GB | VLM, ~82.7s/step, 131M trainable params |
+| Qwen3.5-4B (1000 art) | 0.068 | 669.7 min (11.16 hr) | **86.6%** | **71.7%** | ~14.6 GB | VLM, ~228s/step |
+| Qwen3.5-9B | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion OOMs on 16GB |
 
 ### Cross-Model Analysis
-- **Qwen3.5-4B vs Qwen3-8B**: The smaller 4.6B-param VLM slightly outperforms the 8B text-only model (Tuple F1 71.7% vs 71.2%), suggesting newer Qwen3.5 architecture is more parameter-efficient for text tasks.
-- **Training speed**: Qwen3.5-4B is ~4× slower per step than Qwen3-8B despite being smaller, likely due to VLM architecture overhead and less optimized unsloth patches for `Qwen3_5ForConditionalGeneration`.
-- **VRAM**: Qwen3.5-4B uses slightly less VRAM (~14.6 GB vs ~15.4 GB).
-- **Qwen3.5-9B**: Cannot be loaded on 16GB GPU — the fp16→4bit quantization conversion requires holding full fp16 weights temporarily (~15.3 GB), exceeding available VRAM. Would need ≥24GB GPU.
-- **Recommendation**: Qwen3-8B remains the best choice for this hardware — comparable quality to Qwen3.5-4B but ~4× faster training. For the full 4726-article run, use Qwen3-8B (Tuple F1=77.9%).
+- **Qwen3-8B** is the fastest to train (~54s/step) and delivers strong results. The full 4,726-article run reaches Tuple F1=77.9%.
+- **Gemma3-4B**: Decent quality (Tuple F1=66.3%) but ~5pp below Qwen3-8B on same 1000 articles. ~82.7s/step. Required SDPA attention workaround (Triton flex_attention shared memory OOM at 8192 seq_len) and checkpoint recomputation patch.
+- **Qwen3.5-4B**: Slightly outperforms Qwen3-8B (Tuple F1 71.7% vs 71.2%) despite being smaller, suggesting newer architecture is more parameter-efficient. However, ~4× slower per step (~228s/step) due to VLM overhead.
+- **Qwen3.5-9B**: Cannot be loaded on 16GB GPU — fp16→4bit conversion peak memory ~15.3 GB exceeds available VRAM. Would need ≥24GB GPU.
+- **Recommendation**: Qwen3-8B remains the best choice for this hardware — strong quality at the fastest training speed. For production, use the full 4,726-article Qwen3-8B adapter (Tuple F1=77.9%).
 
 ### Adapter Locations
+- Qwen3-8B full (4726-art): `output/lora_adapter/`
 - Qwen3-8B (1000-art): `output/ablation_1000art/lora_adapter/`
+- Gemma3-4B (1000-art): `output/1000art_gemma3_4b/lora_adapter/`
 - Qwen3.5-4B (1000-art): `output/1000art_qwen35_4b/lora_adapter/`
 
 ### Running Models
@@ -262,6 +269,13 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     "unsloth/Qwen3-8B-bnb-4bit", max_seq_length=8192, load_in_4bit=True,
 )
 model = PeftModel.from_pretrained(model, "output/ablation_1000art/lora_adapter")
+FastLanguageModel.for_inference(model)
+
+# For Gemma3-4B
+model, tokenizer = FastLanguageModel.from_pretrained(
+    "unsloth/gemma-3-4b-it-bnb-4bit", max_seq_length=8192, load_in_4bit=True,
+)
+model = PeftModel.from_pretrained(model, "output/1000art_gemma3_4b/lora_adapter")
 FastLanguageModel.for_inference(model)
 
 # For Qwen3.5-4B

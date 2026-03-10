@@ -16,25 +16,10 @@ from pathlib import Path
 
 import torch
 
-# Gemma3 VLM causes CheckpointError during gradient checkpointing with
-# torch.compile — vision encoder tensors get reordered during recomputation.
-# The values are correct but order differs, so we silence the validation check.
-import torch.utils.checkpoint as _torch_ckpt
-if hasattr(_torch_ckpt, '_CheckpointFrame'):
-    _torch_ckpt._CheckpointFrame.check_recomputed_tensors_match = lambda self, gid: None
-
-# Gemma3's flex_attention backward pass requires more shared memory (140,800 B)
-# than RTX 5070 Ti supports (101,376 B). Remove Gemma3 from DISABLE_SDPA list
-# so unsloth uses SDPA instead of flex_attention.
-import unsloth.models.loader as _loader
-_loader.DISABLE_SDPA_MODEL_NAMES = [
-    n for n in _loader.DISABLE_SDPA_MODEL_NAMES if "gemma3" not in n
-]
-
 BASE_DIR = Path(__file__).resolve().parent
 FULL_TRAIN_PATH = BASE_DIR / "data" / "train.json"
 EVAL_PATH = BASE_DIR / "data" / "eval.json"
-DEFAULT_MAX_SEQ_LENGTH = 8192
+MAX_SEQ_LENGTH = 8192
 
 LORA_R = 64
 LORA_ALPHA = 64
@@ -54,15 +39,6 @@ LOGGING_STEPS = 5
 NUM_ARTICLES = 1000
 
 REL_PATTERN = re.compile(r"^([A-Z\-]+)\(([^/]+)/([^)]+)\)$")
-
-
-def get_chat_markers(model_name: str) -> tuple[str, str]:
-    """Return (instruction_part, response_part) for train_on_responses_only."""
-    name_lower = model_name.lower()
-    if "gemma" in name_lower:
-        return "<start_of_turn>user\n", "<start_of_turn>model\n"
-    else:  # Qwen, default
-        return "<|im_start|>user\n", "<|im_start|>assistant\n"
 
 
 def parse_csv_output(text: str) -> list[dict]:
@@ -92,23 +68,19 @@ def subsample_data(full_data: list[dict], num_articles: int, seed: int = 42) -> 
 
 
 def train_model(model_name: str, train_data: list[dict], output_dir: Path,
-                checkpoint_dir: Path, log_file: Path, max_seq_length: int = DEFAULT_MAX_SEQ_LENGTH):
+                checkpoint_dir: Path, log_file: Path):
     """Train a LoRA adapter on the given data."""
     from unsloth import FastLanguageModel
     from unsloth.chat_templates import train_on_responses_only
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
 
-    print(f"Training {model_name} on {len(train_data)} examples, max_seq={max_seq_length}, saving to {output_dir}")
-
-    # Gemma3 needs sdpa to avoid flex_attention Triton kernel OOM (shared memory limit)
-    load_kwargs = {"attn_implementation": "sdpa"} if "gemma" in model_name.lower() else {}
+    print(f"Training {model_name} on {len(train_data)} examples, saving to {output_dir}")
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model_name,
-        max_seq_length=max_seq_length,
+        max_seq_length=MAX_SEQ_LENGTH,
         load_in_4bit=True,
-        **load_kwargs,
     )
 
     model = FastLanguageModel.get_peft_model(
@@ -155,7 +127,7 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         report_to="none",
         max_grad_norm=1.0,
         dataloader_num_workers=4,
-        max_length=max_seq_length,
+        max_length=MAX_SEQ_LENGTH,
         eos_token=None,
     )
 
@@ -166,11 +138,10 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         processing_class=tokenizer,
     )
 
-    instr_part, resp_part = get_chat_markers(model_name)
     trainer = train_on_responses_only(
         trainer,
-        instruction_part=instr_part,
-        response_part=resp_part,
+        instruction_part="<|im_start|>user\n",
+        response_part="<|im_start|>assistant\n",
     )
 
     print(f"Total optimizer steps: ~{total_steps}")
@@ -205,18 +176,15 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
 
 
 def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
-                   num_samples: int = 50, max_seq_length: int = DEFAULT_MAX_SEQ_LENGTH) -> dict:
+                   num_samples: int = 50) -> dict:
     """Evaluate a fine-tuned model."""
     from unsloth import FastLanguageModel
     from peft import PeftModel
 
-    load_kwargs = {"attn_implementation": "sdpa"} if "gemma" in model_name.lower() else {}
-
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model_name,
-        max_seq_length=max_seq_length,
+        max_seq_length=MAX_SEQ_LENGTH,
         load_in_4bit=True,
-        **load_kwargs,
     )
     model = PeftModel.from_pretrained(model, adapter_path)
     FastLanguageModel.for_inference(model)
@@ -257,7 +225,7 @@ def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
         attention_mask = torch.ones_like(input_ids)
         input_len = input_ids.shape[1]
 
-        if input_len > max_seq_length - 1024:
+        if input_len > MAX_SEQ_LENGTH - 1024:
             print(f"  [{i+1}/{len(samples)}] {ex['title']}: input too long, skipping")
             continue
 
@@ -349,16 +317,13 @@ def main():
     parser.add_argument("--model", type=str, required=True, help="HuggingFace model name")
     parser.add_argument("--tag", type=str, required=True, help="Short tag for output dirs (e.g. qwen35_9b)")
     parser.add_argument("--num-eval", type=int, default=50, help="Number of eval samples")
-    parser.add_argument("--max-seq-len", type=int, default=DEFAULT_MAX_SEQ_LENGTH, help="Max sequence length")
     args = parser.parse_args()
 
     tag = f"1000art_{args.tag}"
 
-    max_seq_length = args.max_seq_len
-
     print(f"\n{'='*72}")
     print(f"  MODEL COMPARISON RUN: {args.model}")
-    print(f"  Tag: {tag}, Articles: {NUM_ARTICLES}, max_seq={max_seq_length}")
+    print(f"  Tag: {tag}, Articles: {NUM_ARTICLES}")
     print(f"  Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*72}\n")
 
@@ -383,14 +348,14 @@ def main():
 
     # Train
     print(f"\n--- Training [{time.strftime('%H:%M:%S')}] ---")
-    train_stats = train_model(args.model, train_subset, output_dir, checkpoint_dir, log_file, max_seq_length)
+    train_stats = train_model(args.model, train_subset, output_dir, checkpoint_dir, log_file)
     print(f"Training done [{time.strftime('%H:%M:%S')}]: loss={train_stats['train_loss']:.4f}, "
           f"time={train_stats['train_runtime_seconds']/60:.1f}min")
 
     # Evaluate
     adapter_path = str(output_dir / "lora_adapter")
     print(f"\n--- Evaluation [{time.strftime('%H:%M:%S')}] ---")
-    eval_results = evaluate_model(args.model, adapter_path, eval_data, args.num_eval, max_seq_length)
+    eval_results = evaluate_model(args.model, adapter_path, eval_data, args.num_eval)
     eval_output.write_text(json.dumps(eval_results, indent=2))
     print(f"Eval done [{time.strftime('%H:%M:%S')}]")
 
