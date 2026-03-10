@@ -237,8 +237,15 @@ Training the same 1000-article subset across different model architectures to co
 | Model | Train Loss | Train Time | Name F1 | Tuple F1 | VRAM | Notes |
 |-------|-----------|------------|---------|----------|------|-------|
 | Qwen3-8B | 0.112 | 175.4 min | 86.1% | 71.2% | ~15.4 GB | Text-only, pre-quantized 4-bit |
-| Qwen3.5-4B | _(running)_ | _(running)_ | — | — | ~14.6 GB | VLM with vision encoder overhead |
-| Qwen3.5-9B | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion OOMs |
+| Qwen3.5-4B | 0.068 | 669.7 min (11.16 hr) | **86.6%** | **71.7%** | ~14.6 GB | VLM, 4× slower per step (~228s vs ~54s) |
+| Qwen3.5-9B | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion peak ~15.3 GB OOMs on 16GB |
+
+### Cross-Model Analysis
+- **Qwen3.5-4B vs Qwen3-8B**: The smaller 4.6B-param VLM slightly outperforms the 8B text-only model (Tuple F1 71.7% vs 71.2%), suggesting newer Qwen3.5 architecture is more parameter-efficient for text tasks.
+- **Training speed**: Qwen3.5-4B is ~4× slower per step than Qwen3-8B despite being smaller, likely due to VLM architecture overhead and less optimized unsloth patches for `Qwen3_5ForConditionalGeneration`.
+- **VRAM**: Qwen3.5-4B uses slightly less VRAM (~14.6 GB vs ~15.4 GB).
+- **Qwen3.5-9B**: Cannot be loaded on 16GB GPU — the fp16→4bit quantization conversion requires holding full fp16 weights temporarily (~15.3 GB), exceeding available VRAM. Would need ≥24GB GPU.
+- **Recommendation**: Qwen3-8B remains the best choice for this hardware — comparable quality to Qwen3.5-4B but ~4× faster training. For the full 4726-article run, use Qwen3-8B (Tuple F1=77.9%).
 
 ### Adapter Locations
 - Qwen3-8B (1000-art): `output/ablation_1000art/lora_adapter/`
