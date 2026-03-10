@@ -189,6 +189,9 @@ def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
     model = PeftModel.from_pretrained(model, adapter_path)
     FastLanguageModel.for_inference(model)
 
+    # For VLM models, tokenizer is a processor — get the underlying text tokenizer
+    text_tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
+
     samples = eval_data[:num_samples]
     metrics = {
         "total_samples": num_samples,
@@ -215,11 +218,11 @@ def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
             {"role": "user", "content": user_msg},
         ]
 
-        tokenized = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt", return_dict=True,
+        text = tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False,
         )
-        input_ids = tokenized["input_ids"].to(model.device)
-        attention_mask = tokenized["attention_mask"].to(model.device)
+        input_ids = text_tokenizer.encode(text, return_tensors="pt").to(model.device)
+        attention_mask = torch.ones_like(input_ids)
         input_len = input_ids.shape[1]
 
         if input_len > MAX_SEQ_LENGTH - 1024:
