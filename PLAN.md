@@ -237,20 +237,33 @@ Training the same 1000-article subset across different model architectures to co
 
 All models trained on the same 1000-article subset (subsampled from the 4,726-article training pool, seed=42). Evaluated on the same 50-sample eval set (from 526-article eval pool). The full Qwen3-8B run used all 4,726 training articles — all other runs below used 1,000.
 
-| Model | Train Loss | Train Time | Name F1 | Tuple F1 | VRAM | Notes |
-|-------|-----------|------------|---------|----------|------|-------|
-| Qwen3-8B (1000 art) | 0.112 | 175.4 min | 86.1% | 71.2% | ~15.4 GB | Text-only, pre-quantized 4-bit, ~54s/step |
-| Qwen3-8B (4726 art) | 0.081 | 13.8 hr | 89.4% | 77.9% | ~15.4 GB | Full dataset, same model |
-| Gemma3-4B (1000 art) | 0.126 | 257.9 min (4.30 hr) | 84.0% | 66.3% | ~15.5 GB | VLM, ~82.7s/step, 131M trainable params |
-| Qwen3.5-4B (1000 art) | 0.068 | 669.7 min (11.16 hr) | **86.6%** | **71.7%** | ~14.6 GB | VLM, ~228s/step |
-| Qwen3.5-9B | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion OOMs on 16GB |
+| Model | Train Loss | Train Time | Name F1 | Tuple F1 | Inference tok/s | VRAM | Notes |
+|-------|-----------|------------|---------|----------|----------------|------|-------|
+| **Qwen3-8B (1000 art)** | 0.112 | 175.4 min | 86.1% | 71.2% | **16.1** | ~15.4 GB | Text-only, pre-quantized 4-bit, ~54s/step |
+| **Qwen3-8B (4726 art)** | 0.081 | 13.8 hr | 89.4% | 77.9% | **15.9** | ~15.4 GB | Full dataset, same model |
+| Qwen3.5-4B (1000 art) | 0.068 | 669.7 min (11.16 hr) | **86.6%** | **71.7%** | 9.3 | ~14.6 GB | VLM, ~228s/step |
+| Gemma3-4B (1000 art) | 0.126 | 257.9 min (4.30 hr) | 84.0% | 66.3% | 6.3 | ~15.5 GB | VLM, ~82.7s/step |
+| Qwen3.5-9B | — | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion OOMs on 16GB |
+
+### Inference Speed Benchmark
+
+Benchmarked on the same 5 eval articles (Lou Cannon, Dawn O'Porter, Brent Venables, Bruno Guimarães, Dacre Montgomery) with identical generation settings (max_new_tokens=2048, temperature=0.1, top_p=0.95). All models loaded in 4-bit via unsloth on RTX 5070 Ti.
+
+| Model | Avg tok/s | Overall tok/s | Rank |
+|-------|----------|--------------|------|
+| Qwen3-8B (1000-art) | 15.8 | **16.1** | 1st (fastest) |
+| Qwen3-8B (4726-art) | 15.1 | 15.9 | 2nd |
+| Qwen3.5-4B (1000-art) | 8.8 | 9.3 | 3rd |
+| Gemma3-4B (1000-art) | 6.1 | 6.3 | 4th (slowest) |
+
+Qwen3-8B is **2.5× faster** at inference than Gemma3-4B and **1.7× faster** than Qwen3.5-4B, despite being the largest model. The text-only `Qwen3ForCausalLM` architecture benefits from well-optimized unsloth inference patches compared to the VLM architectures.
 
 ### Cross-Model Analysis
-- **Qwen3-8B** is the fastest to train (~54s/step) and delivers strong results. The full 4,726-article run reaches Tuple F1=77.9%.
-- **Gemma3-4B**: Decent quality (Tuple F1=66.3%) but ~5pp below Qwen3-8B on same 1000 articles. ~82.7s/step. Required SDPA attention workaround (Triton flex_attention shared memory OOM at 8192 seq_len) and checkpoint recomputation patch.
-- **Qwen3.5-4B**: Slightly outperforms Qwen3-8B (Tuple F1 71.7% vs 71.2%) despite being smaller, suggesting newer architecture is more parameter-efficient. However, ~4× slower per step (~228s/step) due to VLM overhead.
-- **Qwen3.5-9B**: Cannot be loaded on 16GB GPU — fp16→4bit conversion peak memory ~15.3 GB exceeds available VRAM. Would need ≥24GB GPU.
-- **Recommendation**: Qwen3-8B remains the best choice for this hardware — strong quality at the fastest training speed. For production, use the full 4,726-article Qwen3-8B adapter (Tuple F1=77.9%).
+- **Qwen3-8B** is the fastest to train (~54s/step), fastest at inference (~16 tok/s), and delivers strong results. The full 4,726-article run reaches Tuple F1=77.9%. Clear winner on this hardware.
+- **Gemma3-4B**: Lowest quality (Tuple F1=66.3%) AND slowest inference (6.3 tok/s). Required SDPA attention workaround and checkpoint recomputation patch. Not recommended.
+- **Qwen3.5-4B**: Slightly outperforms Qwen3-8B on quality (Tuple F1 71.7% vs 71.2%) but ~4× slower to train and ~1.7× slower at inference due to VLM overhead.
+- **Qwen3.5-9B**: Cannot be loaded on 16GB GPU.
+- **Recommendation**: Qwen3-8B is the clear best choice — highest inference speed, fastest training, and strong quality. For production, use the full 4,726-article Qwen3-8B adapter (Tuple F1=77.9%, ~16 tok/s).
 
 ### Adapter Locations
 - Qwen3-8B full (4726-art): `output/lora_adapter/`
