@@ -327,3 +327,51 @@ FastLanguageModel.for_inference(model)
 ---
 
 *Review this plan and let me know what changes you'd like before I begin execution.*
+
+# Google Cloud Vertex
+
+Install gcloud:
+```
+sudo apt-get update && sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+sudo apt-get update
+sudo apt-get install -y google-cloud-cli
+```
+
+Auth:
+```
+gcloud auth login
+gcloud auth application-default login
+```
+
+Set project:
+```
+gcloud projects list
+gcloud config set project project-158a3861-f146-4316-a63
+```
+
+Set artifact repo:
+```
+gcloud artifacts repositories create cranberry-train \
+    --repository-format=docker \
+    --location=us-central1 \
+    --description="Docker repository for Unsloth training jobs"
+gcloud auth configure-docker us-central1-docker.pkg.dev
+```
+
+Update `submit_vertex.sh` with project:
+```
+gcloud projects list
+```
+
+Create cloud storage bucket and update ENV VAR in `submit_vertex.sh`:
+```
+gcloud storage buckets create gs://my-cranberry-bucket --location=us-central1
+```
+
+Submit job:
+```
+(cd vertex && ./submit_vertex.sh)
+```
+
