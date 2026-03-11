@@ -231,8 +231,12 @@ Training the same 1000-article subset across different model architectures to co
 | Qwen3-8B | `unsloth/Qwen3-8B-bnb-4bit` | Qwen3ForCausalLM | ~8B | Text-only |
 | Gemma3-4B | `unsloth/gemma-3-4b-it-bnb-4bit` | Gemma3ForConditionalGeneration | ~4.4B | VLM (text+vision) |
 | Qwen3.5-4B | `unsloth/Qwen3.5-4B` | Qwen3_5ForConditionalGeneration | ~4.6B | VLM (text+vision) |
+| Qwen3.5-9B | `unsloth/Qwen3.5-9B` | Qwen3_5ForConditionalGeneration | ~9.5B | VLM (text+vision) |
+| Nanbeige4.1-3B | `Nanbeige/Nanbeige4.1-3B` | LlamaForCausalLM | ~4B | Text-only |
+| Qwen3.5-4B Abliterated | `SicariusSicariiStuff/Qwen3.5-4B_Abliterated` | Qwen3_5ForConditionalGeneration | ~4.6B | VLM (text+vision), abliterated |
 | Qwen3.5-9B | `unsloth/Qwen3.5-9B` | Qwen3_5ForConditionalGeneration | ~9B | VLM — OOM on 16GB |
 | Qwen3.5-35B-A3B | `unsloth/Qwen3.5-35B-A3B` | Qwen3_5MoeForCausalLM | 36B total / 3B active | MoE, bf16 LoRA on A100 |
+| Llama-3.2-3B | `unsloth/Llama-3.2-3B-Instruct` | LlamaForCausalLM | ~3.2B | Text-only |
 
 ### Cross-Model Results (1000 articles, same eval set)
 
@@ -244,8 +248,11 @@ All models trained on the same 1000-article subset (subsampled from the 4,726-ar
 | **Qwen3-8B (4726 art)** | 0.081 | 13.8 hr | 89.4% | 77.9% | **15.9** | ~15.4 GB | Full dataset, same model |
 | Qwen3.5-4B (1000 art) | 0.068 | 669.7 min (11.16 hr) | **86.6%** | **71.7%** | 9.3 | ~14.6 GB | VLM, ~228s/step |
 | Gemma3-4B (1000 art) | 0.126 | 257.9 min (4.30 hr) | 84.0% | 66.3% | 6.3 | ~15.5 GB | VLM, ~82.7s/step |
-| Qwen3.5-9B | — | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion OOMs on 16GB |
+| Qwen3.5-9B (1000 art) | 0.063 | 322.4 min (5.37 hr) | 86.4% | 73.4% | TBD | ~32 GB | VLM, bf16 LoRA (not QLoRA), ~103s/step, trained on RTX 5090 |
+| Nanbeige4.1-3B (1000 art) | 0.124 | 43.6 min (0.73 hr) | 81.2% | 64.4% | 23.1* | ~12.4 GB | Text-only, ~14.0s/step, *benchmarked on 5090 |
+| Qwen3.5-4B Abliterated (1000 art) | 0.068 | 289.8 min (4.83 hr) | 26.5% | 21.3% | 22.9* | ~17.1 GB | VLM, ~93s/step, trained+benchmarked on RTX 5090 |
 | **Qwen3.5-35B-A3B (1000 art)** | 0.076 | 480.1 min (8.00 hr) | **89.0%** | **76.1%** | — | ~75 GB | MoE (36B/3B active), bf16 LoRA r=16 on A100-80GB, ~152s/step |
+| Llama-3.2-3B (1000 art) | 0.111 | 35.5 min | 85.3% | 71.2% | TBD | ~10 GB | Text-only, ~11s/step, trained on RTX 5090 |
 
 ### Inference Speed Benchmark
 
@@ -257,6 +264,10 @@ Benchmarked on the same 5 eval articles (Lou Cannon, Dawn O'Porter, Brent Venabl
 | Qwen3-8B (4726-art) | 15.1 | 15.9 | 2nd |
 | Qwen3.5-4B (1000-art) | 8.8 | 9.3 | 3rd |
 | Gemma3-4B (1000-art) | 6.1 | 6.3 | 4th (slowest) |
+| Nanbeige4.1-3B (1000-art)* | 22.6 | 23.1 | — (different GPU) |
+| Qwen3.5-4B Abliterated (1000-art)* | 22.8 | 22.9 | — (different GPU) |
+
+\* Nanbeige4.1-3B was benchmarked on RTX 5090 (32GB), not RTX 5070 Ti. Direct speed comparison with other models is not apples-to-apples.
 
 Qwen3-8B is **2.5× faster** at inference than Gemma3-4B and **1.7× faster** than Qwen3.5-4B, despite being the largest model. The text-only `Qwen3ForCausalLM` architecture benefits from well-optimized unsloth inference patches compared to the VLM architectures.
 
@@ -283,11 +294,13 @@ With `enable_thinking=False`, the prompt pre-closes the think block (`<think>\n\
 
 ### Cross-Model Analysis
 - **Qwen3.5-35B-A3B (MoE)**: **Best quality on 1000 articles** — Name F1=89.0%, Tuple F1=76.1%, matching the full 4,726-article Qwen3-8B run quality. Trained with bf16 LoRA (r=16) on A100-80GB. MoE architecture means only 3B params active per token despite 36B total. Required `FastModel` (not `FastLanguageModel`) and `enable_thinking=False` for correct inference. 8 hours to train (~152s/step).
-- **Qwen3-8B** is the fastest to train (~54s/step), fastest at inference (~16 tok/s), and delivers strong results. The full 4,726-article run reaches Tuple F1=77.9%. Clear winner on consumer hardware (16GB).
-- **Gemma3-4B**: Lowest quality (Tuple F1=66.3%) AND slowest inference (6.3 tok/s). Required SDPA attention workaround and checkpoint recomputation patch. Not recommended.
+- **Qwen3-8B** is the fastest to train (~54s/step), fastest at inference (~16 tok/s), and delivers strong results. The full 4,726-article run reaches Tuple F1=77.9%. Clear winner on this hardware.
+- **Nanbeige4.1-3B**: Lowest quality (Tuple F1=64.4%, Name F1=81.2%) but fastest training (43.6 min, ~14s/step) and lowest VRAM (~12.4 GB). High inference speed on 5090 (23.1 tok/s) but not directly comparable to 5070 Ti benchmarks. Text-only LlamaForCausalLM architecture.
+- **Gemma3-4B**: Low quality (Tuple F1=66.3%) AND slowest inference (6.3 tok/s). Required SDPA attention workaround and checkpoint recomputation patch. Not recommended.
 - **Qwen3.5-4B**: Slightly outperforms Qwen3-8B on quality (Tuple F1 71.7% vs 71.2%) but ~4× slower to train and ~1.7× slower at inference due to VLM overhead.
-- **Qwen3.5-9B**: Cannot be loaded on 16GB GPU.
-- **Recommendation**: For consumer GPU (16GB), Qwen3-8B remains the best choice — fast training, fast inference, strong quality. For maximum quality with cloud GPU, Qwen3.5-35B-A3B achieves near-parity with the full Qwen3-8B dataset using only 1000 articles.
+- **Qwen3.5-9B**: Best Tuple F1 (73.4%) among 1000-art runs. Requires RTX 5090 (32GB) for bf16 LoRA training — OOMs on 16GB GPUs. Train loss 0.063 (lowest). ~103s/step, 5.37 hours total. Quality is comparable to Qwen3.5-4B (73.4% vs 71.7% Tuple F1) but trains 2× faster per step and benefits from larger model capacity.
+- **Llama-3.2-3B**: Matches Qwen3-8B's Tuple F1 (71.2%) with less than half the parameters (3.2B vs 8B). Fastest to train by far (~11s/step, 35.5 min total vs 175 min for Qwen3-8B). Only ~10GB VRAM during training. Strong format compliance (100%). A compelling lightweight option.
+- **Qwen3.5-4B Abliterated**: Abliteration severely damaged instruction-following capacity. Format compliance only 45.8% (many samples produce 0 valid CSV lines). Name F1=26.5%, Tuple F1=21.3%. Despite identical architecture and lower train loss (0.068 vs 0.068 for regular Qwen3.5-4B), the abliterated weights cannot recover structured extraction capability even after fine-tuning. Inference speed on 5090 (22.9 tok/s) is similar to Nanbeige4.1-3B on the same hardware. **Not recommended.**
 
 ### Adapter Locations
 - Qwen3-8B full (4726-art): `output/lora_adapter/`
@@ -295,6 +308,10 @@ With `enable_thinking=False`, the prompt pre-closes the think block (`<think>\n\
 - Gemma3-4B (1000-art): `output/1000art_gemma3_4b/lora_adapter/`
 - Qwen3.5-4B (1000-art): `output/1000art_qwen35_4b/lora_adapter/`
 - Qwen3.5-35B-A3B (1000-art): `output/1000art_qwen35_35b/lora_adapter/` (bf16 LoRA, requires A100+)
+- Nanbeige4.1-3B (1000-art): `output/1000art_nanbeige41_3b/lora_adapter/`
+- Llama-3.2-3B (1000-art): `output/1000art_llama32_3b/lora_adapter/`
+- Qwen3.5-4B Abliterated (1000-art): `output/1000art_qwen35_4b_abliterated/lora_adapter/`
+- Qwen3.5-9B (1000-art): `output/1000art_qwen35_9b/lora_adapter/`
 
 ### Running Models
 To load a fine-tuned adapter for inference:
@@ -321,6 +338,18 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     "unsloth/Qwen3.5-4B", max_seq_length=8192, load_in_4bit=True,
 )
 model = PeftModel.from_pretrained(model, "output/1000art_qwen35_4b/lora_adapter")
+FastLanguageModel.for_inference(model)
+
+# For Qwen3.5-4B Abliterated
+model, tokenizer = FastLanguageModel.from_pretrained(
+    "SicariusSicariiStuff/Qwen3.5-4B_Abliterated", max_seq_length=8192, load_in_4bit=True,
+)
+model = PeftModel.from_pretrained(model, "output/1000art_qwen35_4b_abliterated/lora_adapter")
+# For Qwen3.5-9B (requires 32GB+ VRAM, bf16 LoRA)
+model, tokenizer = FastLanguageModel.from_pretrained(
+    "unsloth/Qwen3.5-9B", max_seq_length=8192, load_in_4bit=False, load_in_16bit=True,
+)
+model = PeftModel.from_pretrained(model, "output/1000art_qwen35_9b/lora_adapter")
 FastLanguageModel.for_inference(model)
 ```
 

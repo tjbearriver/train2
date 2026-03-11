@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Train and evaluate a specific model on 1000 articles for cross-model comparison.
+"""Train and evaluate Qwen3.5-9B on 1000 articles using bf16 LoRA (NOT QLoRA).
+
+Qwen3.5 models should NOT use QLoRA (4-bit) per Unsloth docs — bf16 LoRA instead.
+Designed for RTX 5090 (32GB VRAM). Qwen3.5-9B bf16 LoRA needs ~22GB VRAM.
 
 Usage:
-  python train_model_compare.py --model unsloth/Qwen3.5-9B --tag qwen35_9b
-  python train_model_compare.py --model unsloth/Qwen3.5-4B --tag qwen35_4b
+  python train_qwen35_9b.py
 """
 
-import argparse
 import gc
 import json
 import random
@@ -20,6 +21,9 @@ BASE_DIR = Path(__file__).resolve().parent
 FULL_TRAIN_PATH = BASE_DIR / "data" / "train.json"
 EVAL_PATH = BASE_DIR / "data" / "eval.json"
 MAX_SEQ_LENGTH = 8192
+
+MODEL_NAME = "unsloth/Qwen3.5-9B"
+TAG = "1000art_qwen35_9b"
 
 LORA_R = 64
 LORA_ALPHA = 64
@@ -67,20 +71,22 @@ def subsample_data(full_data: list[dict], num_articles: int, seed: int = 42) -> 
     return rng.sample(full_data, num_articles)
 
 
-def train_model(model_name: str, train_data: list[dict], output_dir: Path,
-                checkpoint_dir: Path, log_file: Path):
-    """Train a LoRA adapter on the given data."""
+def train_model(train_data: list[dict], output_dir: Path, checkpoint_dir: Path):
+    """Train a LoRA adapter on the given data using bf16 LoRA (not QLoRA)."""
     from unsloth import FastLanguageModel
     from unsloth.chat_templates import train_on_responses_only
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
 
-    print(f"Training {model_name} on {len(train_data)} examples, saving to {output_dir}")
+    print(f"Training {MODEL_NAME} on {len(train_data)} examples (bf16 LoRA)")
+    print(f"Output: {output_dir}")
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
+        model_name=MODEL_NAME,
         max_seq_length=MAX_SEQ_LENGTH,
-        load_in_4bit=True,
+        load_in_4bit=False,      # NOT QLoRA — Qwen3.5 not recommended for 4-bit
+        load_in_16bit=True,      # bf16 LoRA
+        full_finetuning=False,
     )
 
     model = FastLanguageModel.get_peft_model(
@@ -93,6 +99,7 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         use_gradient_checkpointing="unsloth",
         random_state=42,
     )
+    model.print_trainable_parameters()
 
     def formatting_func(examples):
         texts = []
@@ -151,7 +158,7 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         resp_part = "<|start_header_id|>assistant<|end_header_id|>\n\n"
     else:
         raise ValueError(f"Unknown chat template format. Sample: {sample_text[:200]}")
-    print(f"Chat template detected: instruction_part={inst_part!r}, response_part={resp_part!r}")
+    print(f"Chat template: instruction_part={inst_part!r}, response_part={resp_part!r}")
 
     trainer = train_on_responses_only(
         trainer,
@@ -172,12 +179,16 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
     tokenizer.save_pretrained(adapter_path)
 
     stats = {
-        "model_name": model_name,
+        "model_name": MODEL_NAME,
         "train_loss": train_result.training_loss,
         "train_runtime_seconds": elapsed,
         "train_samples": len(train_data),
         "epochs": EPOCHS,
         "total_steps": total_steps,
+        "lora_r": LORA_R,
+        "lora_alpha": LORA_ALPHA,
+        "quantization": "bf16 LoRA (not QLoRA)",
+        "max_seq_length": MAX_SEQ_LENGTH,
     }
     with open(output_dir / "training_stats.json", "w") as f:
         json.dump(stats, f, indent=2)
@@ -190,21 +201,22 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
     return stats
 
 
-def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
-                   num_samples: int = 50) -> dict:
-    """Evaluate a fine-tuned model."""
+def evaluate_model(adapter_path: str, eval_data: list[dict], num_samples: int = 50) -> dict:
+    """Evaluate the fine-tuned model."""
     from unsloth import FastLanguageModel
     from peft import PeftModel
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
+        model_name=MODEL_NAME,
         max_seq_length=MAX_SEQ_LENGTH,
-        load_in_4bit=True,
+        load_in_4bit=False,
+        load_in_16bit=True,
+        full_finetuning=False,
     )
     model = PeftModel.from_pretrained(model, adapter_path)
     FastLanguageModel.for_inference(model)
 
-    # For VLM models, tokenizer is a processor — get the underlying text tokenizer
+    # For VLM models, tokenizer might be a processor
     text_tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
 
     samples = eval_data[:num_samples]
@@ -328,49 +340,40 @@ def compute_comparison(eval_results: dict) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True, help="HuggingFace model name")
-    parser.add_argument("--tag", type=str, required=True, help="Short tag for output dirs (e.g. qwen35_9b)")
-    parser.add_argument("--num-eval", type=int, default=50, help="Number of eval samples")
-    args = parser.parse_args()
-
-    tag = f"1000art_{args.tag}"
-
     print(f"\n{'='*72}")
-    print(f"  MODEL COMPARISON RUN: {args.model}")
-    print(f"  Tag: {tag}, Articles: {NUM_ARTICLES}")
+    print(f"  QWEN3.5-9B FINE-TUNING (bf16 LoRA, 1000 articles)")
+    print(f"  Model: {MODEL_NAME}")
     print(f"  Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*72}\n")
 
     # Paths
-    output_dir = BASE_DIR / "output" / tag
-    checkpoint_dir = BASE_DIR / "checkpoints" / tag
-    eval_output = BASE_DIR / "data" / f"eval_results_{tag}.json"
-    log_file = BASE_DIR / f"training_{tag}.log"
+    output_dir = BASE_DIR / "output" / TAG
+    checkpoint_dir = BASE_DIR / "checkpoints" / TAG
+    eval_output = BASE_DIR / "data" / f"eval_results_{TAG}.json"
+    train_data_path = BASE_DIR / "data" / f"train_{TAG}.json"
 
     # Load data
     full_train = json.loads(FULL_TRAIN_PATH.read_text())
     eval_data = json.loads(EVAL_PATH.read_text())
 
-    # Subsample (same seed=42, same 1000 articles as ablation)
+    # Subsample (same seed=42, same 1000 articles as other comparison runs)
     train_subset = subsample_data(full_train, NUM_ARTICLES)
     print(f"Subsampled {len(train_subset)} training examples from {len(full_train)}")
 
     # Save subsample for reproducibility
-    subset_path = BASE_DIR / "data" / f"train_{tag}.json"
-    subset_path.write_text(json.dumps(train_subset))
-    print(f"Saved training subset to {subset_path}")
+    train_data_path.write_text(json.dumps(train_subset))
+    print(f"Saved training subset to {train_data_path}")
 
     # Train
     print(f"\n--- Training [{time.strftime('%H:%M:%S')}] ---")
-    train_stats = train_model(args.model, train_subset, output_dir, checkpoint_dir, log_file)
+    train_stats = train_model(train_subset, output_dir, checkpoint_dir)
     print(f"Training done [{time.strftime('%H:%M:%S')}]: loss={train_stats['train_loss']:.4f}, "
           f"time={train_stats['train_runtime_seconds']/60:.1f}min")
 
     # Evaluate
     adapter_path = str(output_dir / "lora_adapter")
     print(f"\n--- Evaluation [{time.strftime('%H:%M:%S')}] ---")
-    eval_results = evaluate_model(args.model, adapter_path, eval_data, args.num_eval)
+    eval_results = evaluate_model(adapter_path, eval_data, 50)
     eval_output.write_text(json.dumps(eval_results, indent=2))
     print(f"Eval done [{time.strftime('%H:%M:%S')}]")
 
@@ -381,7 +384,7 @@ def main():
     # Compare
     comp = compute_comparison(eval_results)
     print(f"\n{'='*72}")
-    print(f"  RESULTS: {args.model} — {NUM_ARTICLES} articles ({len(train_subset)} training examples)")
+    print(f"  RESULTS: {MODEL_NAME} — {NUM_ARTICLES} articles")
     print(f"{'='*72}")
     print(f"  Format compliance: {comp['format_compliance']:.1%}")
     print(f"  Name:  P={comp['name']['precision']:.1%}  R={comp['name']['recall']:.1%}  F1={comp['name']['f1']:.1%}  TP={comp['name']['tp']}  FP={comp['name']['fp']}  FN={comp['name']['fn']}")
