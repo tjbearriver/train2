@@ -31,7 +31,7 @@ GCS_OUTPUT_BUCKET="my-cranberry-bucket/cranberry-train-output"
 gcloud ai custom-jobs create \
     --region=${REGION} \
     --display-name="train-qwen35-27b-1000art" \
-    --worker-pool-spec=machine-type=a2-highgpu-1g,accelerator-type=NVIDIA_TESLA_A100,accelerator-count=1,replica-count=1,container-image-uri=${IMAGE_TAG} \
+    --worker-pool-spec=machine-type=g2-standard-12,accelerator-type=NVIDIA_L4,accelerator-count=1,replica-count=1,container-image-uri=${IMAGE_TAG} \
     --args="${GCS_OUTPUT_BUCKET}" \
     --project=${PROJECT_ID}
 
