@@ -232,6 +232,7 @@ Training the same 1000-article subset across different model architectures to co
 | Gemma3-4B | `unsloth/gemma-3-4b-it-bnb-4bit` | Gemma3ForConditionalGeneration | ~4.4B | VLM (text+vision) |
 | Qwen3.5-4B | `unsloth/Qwen3.5-4B` | Qwen3_5ForConditionalGeneration | ~4.6B | VLM (text+vision) |
 | Qwen3.5-9B | `unsloth/Qwen3.5-9B` | Qwen3_5ForConditionalGeneration | ~9B | VLM — OOM on 16GB |
+| Llama-3.2-3B | `unsloth/Llama-3.2-3B-Instruct` | LlamaForCausalLM | ~3.2B | Text-only |
 
 ### Cross-Model Results (1000 articles, same eval set)
 
@@ -244,6 +245,7 @@ All models trained on the same 1000-article subset (subsampled from the 4,726-ar
 | Qwen3.5-4B (1000 art) | 0.068 | 669.7 min (11.16 hr) | **86.6%** | **71.7%** | 9.3 | ~14.6 GB | VLM, ~228s/step |
 | Gemma3-4B (1000 art) | 0.126 | 257.9 min (4.30 hr) | 84.0% | 66.3% | 6.3 | ~15.5 GB | VLM, ~82.7s/step |
 | Qwen3.5-9B | — | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion OOMs on 16GB |
+| Llama-3.2-3B (1000 art) | 0.111 | 35.5 min | 85.3% | 71.2% | TBD | ~10 GB | Text-only, ~11s/step, trained on RTX 5090 |
 
 ### Inference Speed Benchmark
 
@@ -263,13 +265,14 @@ Qwen3-8B is **2.5× faster** at inference than Gemma3-4B and **1.7× faster** th
 - **Gemma3-4B**: Lowest quality (Tuple F1=66.3%) AND slowest inference (6.3 tok/s). Required SDPA attention workaround and checkpoint recomputation patch. Not recommended.
 - **Qwen3.5-4B**: Slightly outperforms Qwen3-8B on quality (Tuple F1 71.7% vs 71.2%) but ~4× slower to train and ~1.7× slower at inference due to VLM overhead.
 - **Qwen3.5-9B**: Cannot be loaded on 16GB GPU.
-- **Recommendation**: Qwen3-8B is the clear best choice — highest inference speed, fastest training, and strong quality. For production, use the full 4,726-article Qwen3-8B adapter (Tuple F1=77.9%, ~16 tok/s).
+- **Llama-3.2-3B**: Matches Qwen3-8B's Tuple F1 (71.2%) with less than half the parameters (3.2B vs 8B). Fastest to train by far (~11s/step, 35.5 min total vs 175 min for Qwen3-8B). Only ~10GB VRAM during training. Strong format compliance (100%). A compelling lightweight option.
 
 ### Adapter Locations
 - Qwen3-8B full (4726-art): `output/lora_adapter/`
 - Qwen3-8B (1000-art): `output/ablation_1000art/lora_adapter/`
 - Gemma3-4B (1000-art): `output/1000art_gemma3_4b/lora_adapter/`
 - Qwen3.5-4B (1000-art): `output/1000art_qwen35_4b/lora_adapter/`
+- Llama-3.2-3B (1000-art): `output/1000art_llama32_3b/lora_adapter/`
 
 ### Running Models
 To load a fine-tuned adapter for inference:
