@@ -232,6 +232,7 @@ Training the same 1000-article subset across different model architectures to co
 | Gemma3-4B | `unsloth/gemma-3-4b-it-bnb-4bit` | Gemma3ForConditionalGeneration | ~4.4B | VLM (text+vision) |
 | Qwen3.5-4B | `unsloth/Qwen3.5-4B` | Qwen3_5ForConditionalGeneration | ~4.6B | VLM (text+vision) |
 | Qwen3.5-9B | `unsloth/Qwen3.5-9B` | Qwen3_5ForConditionalGeneration | ~9B | VLM — OOM on 16GB |
+| Qwen3.5-35B-A3B | `unsloth/Qwen3.5-35B-A3B` | Qwen3_5MoeForCausalLM | 36B total / 3B active | MoE, bf16 LoRA on A100 |
 
 ### Cross-Model Results (1000 articles, same eval set)
 
@@ -244,6 +245,7 @@ All models trained on the same 1000-article subset (subsampled from the 4,726-ar
 | Qwen3.5-4B (1000 art) | 0.068 | 669.7 min (11.16 hr) | **86.6%** | **71.7%** | 9.3 | ~14.6 GB | VLM, ~228s/step |
 | Gemma3-4B (1000 art) | 0.126 | 257.9 min (4.30 hr) | 84.0% | 66.3% | 6.3 | ~15.5 GB | VLM, ~82.7s/step |
 | Qwen3.5-9B | — | — | — | — | — | >16 GB | **Does not fit** — fp16→4bit conversion OOMs on 16GB |
+| **Qwen3.5-35B-A3B (1000 art)** | 0.076 | 480.1 min (8.00 hr) | **89.0%** | **76.1%** | — | ~75 GB | MoE (36B/3B active), bf16 LoRA r=16 on A100-80GB, ~152s/step |
 
 ### Inference Speed Benchmark
 
@@ -258,18 +260,41 @@ Benchmarked on the same 5 eval articles (Lou Cannon, Dawn O'Porter, Brent Venabl
 
 Qwen3-8B is **2.5× faster** at inference than Gemma3-4B and **1.7× faster** than Qwen3.5-4B, despite being the largest model. The text-only `Qwen3ForCausalLM` architecture benefits from well-optimized unsloth inference patches compared to the VLM architectures.
 
+### Qwen3.5-35B-A3B: Thinking Mode Gotcha
+
+Qwen3.5 models have a **thinking mode** enabled by default. When `apply_chat_template()` is called without `enable_thinking=False`, the prompt ends with:
+```
+<|im_start|>assistant\n<think>\n
+```
+This forces the model to generate a long internal reasoning chain inside `<think>...</think>` before producing the actual CSV output. With `max_new_tokens=2048`, the thinking consumed nearly all available tokens, leaving the CSV response truncated or empty.
+
+**Symptoms**: Format compliance dropped to 18.8%, pred=0 for ~40/50 samples, Name/Tuple F1=5.6%. Training loss was excellent (0.076), so the model had learned correctly — it just couldn't output the answer due to thinking overhead. Inference took ~240s/sample (wasted on thinking tokens).
+
+**Fix**: Pass `enable_thinking=False` to `apply_chat_template()`:
+```python
+text = tokenizer.apply_chat_template(
+    messages, add_generation_prompt=True, tokenize=False,
+    enable_thinking=False,  # Critical for Qwen3.5 models
+)
+```
+With `enable_thinking=False`, the prompt pre-closes the think block (`<think>\n\n</think>\n\n`), so the model outputs CSV directly. Results jumped from 5.6% → 89.0% Name F1, inference dropped from ~240s → ~20s/sample for small articles, and format compliance hit 100%.
+
+**Note**: This applies to all Qwen3.5 models (4B, 9B, 35B MoE, 122B). The training data contains no thinking tokens, so the model should never be prompted to think during inference.
+
 ### Cross-Model Analysis
-- **Qwen3-8B** is the fastest to train (~54s/step), fastest at inference (~16 tok/s), and delivers strong results. The full 4,726-article run reaches Tuple F1=77.9%. Clear winner on this hardware.
+- **Qwen3.5-35B-A3B (MoE)**: **Best quality on 1000 articles** — Name F1=89.0%, Tuple F1=76.1%, matching the full 4,726-article Qwen3-8B run quality. Trained with bf16 LoRA (r=16) on A100-80GB. MoE architecture means only 3B params active per token despite 36B total. Required `FastModel` (not `FastLanguageModel`) and `enable_thinking=False` for correct inference. 8 hours to train (~152s/step).
+- **Qwen3-8B** is the fastest to train (~54s/step), fastest at inference (~16 tok/s), and delivers strong results. The full 4,726-article run reaches Tuple F1=77.9%. Clear winner on consumer hardware (16GB).
 - **Gemma3-4B**: Lowest quality (Tuple F1=66.3%) AND slowest inference (6.3 tok/s). Required SDPA attention workaround and checkpoint recomputation patch. Not recommended.
 - **Qwen3.5-4B**: Slightly outperforms Qwen3-8B on quality (Tuple F1 71.7% vs 71.2%) but ~4× slower to train and ~1.7× slower at inference due to VLM overhead.
 - **Qwen3.5-9B**: Cannot be loaded on 16GB GPU.
-- **Recommendation**: Qwen3-8B is the clear best choice — highest inference speed, fastest training, and strong quality. For production, use the full 4,726-article Qwen3-8B adapter (Tuple F1=77.9%, ~16 tok/s).
+- **Recommendation**: For consumer GPU (16GB), Qwen3-8B remains the best choice — fast training, fast inference, strong quality. For maximum quality with cloud GPU, Qwen3.5-35B-A3B achieves near-parity with the full Qwen3-8B dataset using only 1000 articles.
 
 ### Adapter Locations
 - Qwen3-8B full (4726-art): `output/lora_adapter/`
 - Qwen3-8B (1000-art): `output/ablation_1000art/lora_adapter/`
 - Gemma3-4B (1000-art): `output/1000art_gemma3_4b/lora_adapter/`
 - Qwen3.5-4B (1000-art): `output/1000art_qwen35_4b/lora_adapter/`
+- Qwen3.5-35B-A3B (1000-art): `output/1000art_qwen35_35b/lora_adapter/` (bf16 LoRA, requires A100+)
 
 ### Running Models
 To load a fine-tuned adapter for inference:

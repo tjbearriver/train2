@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""Train and evaluate Qwen3.5-35B-A3B (MoE) on 1000 articles using bf16 LoRA on A100.
+
+Key differences from train_model_compare.py:
+  - Uses FastModel (not FastLanguageModel) for MoE models
+  - bf16 LoRA (load_in_16bit=True), NOT QLoRA 4-bit (per unsloth docs)
+  - Adapted for A100 80GB VRAM
+
+Usage:
+  python train_qwen35_35b.py
+"""
+
+import gc
+import json
+import random
+import re
+import time
+from pathlib import Path
+
+import torch
+
+BASE_DIR = Path(__file__).resolve().parent
+FULL_TRAIN_PATH = BASE_DIR / "data" / "train.json"
+EVAL_PATH = BASE_DIR / "data" / "eval.json"
+MAX_SEQ_LENGTH = 8192
+
+MODEL_NAME = "unsloth/Qwen3.5-35B-A3B"
+TAG = "1000art_qwen35_35b"
+
+LORA_R = 16
+LORA_ALPHA = 16
+LORA_TARGET_MODULES = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj",
+]
+
+EPOCHS = 3
+BATCH_SIZE = 1
+GRAD_ACCUM = 16
+LEARNING_RATE = 2e-4
+WARMUP_STEPS = 20
+LR_SCHEDULER = "cosine"
+OPTIMIZER = "adamw_8bit"
+LOGGING_STEPS = 5
+NUM_ARTICLES = 1000
+
+REL_PATTERN = re.compile(r"^([A-Z\-]+)\(([^/]+)/([^)]+)\)$")
+
+
+def parse_csv_output(text: str) -> list[dict]:
+    """Parse model CSV output into list of {name, relationship} dicts."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    results = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line or line.startswith("```"):
+            continue
+        parts = line.split(",", 2)
+        if len(parts) < 2:
+            continue
+        name = parts[0].strip()
+        rel = parts[1].strip()
+        if name and REL_PATTERN.match(rel):
+            results.append({"name": name.lower(), "relationship": rel})
+    return results
+
+
+def subsample_data(full_data: list[dict], num_articles: int, seed: int = 42) -> list[dict]:
+    """Subsample training data to a fixed number of articles."""
+    rng = random.Random(seed)
+    if num_articles >= len(full_data):
+        return full_data
+    return rng.sample(full_data, num_articles)
+
+
+def train_model(train_data: list[dict], output_dir: Path, checkpoint_dir: Path):
+    """Train a bf16 LoRA adapter on the given data."""
+    from unsloth import FastModel
+    from unsloth.chat_templates import train_on_responses_only
+    from datasets import Dataset
+    from trl import SFTConfig, SFTTrainer
+
+    print(f"Training {MODEL_NAME} on {len(train_data)} examples, saving to {output_dir}")
+
+    model, tokenizer = FastModel.from_pretrained(
+        model_name=MODEL_NAME,
+        max_seq_length=MAX_SEQ_LENGTH,
+        load_in_4bit=False,
+        load_in_16bit=True,
+        full_finetuning=False,
+    )
+
+    model = FastModel.get_peft_model(
+        model,
+        r=LORA_R,
+        target_modules=LORA_TARGET_MODULES,
+        lora_alpha=LORA_ALPHA,
+        lora_dropout=0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=42,
+        max_seq_length=MAX_SEQ_LENGTH,
+    )
+    model.print_trainable_parameters()
+
+    def formatting_func(examples):
+        texts = []
+        for convos in examples["conversations"]:
+            text = tokenizer.apply_chat_template(convos, tokenize=False, add_generation_prompt=False)
+            texts.append(text)
+        return {"text": texts}
+
+    dataset = Dataset.from_list(train_data)
+    dataset = dataset.map(formatting_func, batched=True)
+
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    total_steps = (len(train_data) * EPOCHS) // (BATCH_SIZE * GRAD_ACCUM)
+    save_steps = max(total_steps // 3, 10)
+
+    training_args = SFTConfig(
+        output_dir=str(checkpoint_dir),
+        num_train_epochs=EPOCHS,
+        per_device_train_batch_size=BATCH_SIZE,
+        gradient_accumulation_steps=GRAD_ACCUM,
+        learning_rate=LEARNING_RATE,
+        warmup_steps=min(WARMUP_STEPS, total_steps // 5),
+        lr_scheduler_type=LR_SCHEDULER,
+        optim=OPTIMIZER,
+        bf16=True,
+        logging_steps=LOGGING_STEPS,
+        save_steps=save_steps,
+        save_total_limit=2,
+        seed=42,
+        report_to="none",
+        max_grad_norm=1.0,
+        dataloader_num_workers=4,
+        max_length=MAX_SEQ_LENGTH,
+        eos_token=None,
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset,
+        processing_class=tokenizer,
+    )
+
+    trainer = train_on_responses_only(
+        trainer,
+        instruction_part="<|im_start|>user\n",
+        response_part="<|im_start|>assistant\n",
+    )
+
+    print(f"Total optimizer steps: ~{total_steps}")
+    t0 = time.time()
+    train_result = trainer.train()
+    elapsed = time.time() - t0
+
+    print(f"Training complete in {elapsed/3600:.2f} hours, loss={train_result.training_loss:.4f}")
+
+    # Save adapter
+    adapter_path = str(output_dir / "lora_adapter")
+    model.save_pretrained(adapter_path)
+    tokenizer.save_pretrained(adapter_path)
+
+    stats = {
+        "model_name": MODEL_NAME,
+        "train_loss": train_result.training_loss,
+        "train_runtime_seconds": elapsed,
+        "train_samples": len(train_data),
+        "epochs": EPOCHS,
+        "total_steps": total_steps,
+        "lora_r": LORA_R,
+        "lora_alpha": LORA_ALPHA,
+        "max_seq_length": MAX_SEQ_LENGTH,
+        "load_in_16bit": True,
+        "load_in_4bit": False,
+    }
+    with open(output_dir / "training_stats.json", "w") as f:
+        json.dump(stats, f, indent=2)
+
+    # Free GPU memory before eval
+    del trainer, model, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return stats
+
+
+def evaluate_model(eval_data: list[dict], adapter_path: str, num_samples: int = 50) -> dict:
+    """Evaluate the fine-tuned model."""
+    from unsloth import FastModel
+    from peft import PeftModel
+
+    model, tokenizer = FastModel.from_pretrained(
+        model_name=MODEL_NAME,
+        max_seq_length=MAX_SEQ_LENGTH,
+        load_in_4bit=False,
+        load_in_16bit=True,
+        full_finetuning=False,
+    )
+    model = PeftModel.from_pretrained(model, adapter_path)
+    FastModel.for_inference(model)
+
+    text_tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
+
+    samples = eval_data[:num_samples]
+    metrics = {
+        "total_samples": num_samples,
+        "format_valid": 0,
+        "total_golden_rels": 0,
+        "total_predicted_rels": 0,
+        "name_matches": 0,
+        "exact_matches": 0,
+        "per_sample": [],
+    }
+
+    for i, ex in enumerate(samples):
+        convos = ex["conversations"]
+        system_msg = convos[0]["content"]
+        user_msg = convos[1]["content"]
+        golden_output = convos[2]["content"]
+
+        golden_rels = parse_csv_output(golden_output)
+        golden_names = {r["name"] for r in golden_rels}
+        golden_pairs = {(r["name"], r["relationship"]) for r in golden_rels}
+
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ]
+
+        text = tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False,
+            enable_thinking=False,
+        )
+        input_ids = text_tokenizer.encode(text, return_tensors="pt").to(model.device)
+        attention_mask = torch.ones_like(input_ids)
+        input_len = input_ids.shape[1]
+
+        if input_len > MAX_SEQ_LENGTH - 1024:
+            print(f"  [{i+1}/{len(samples)}] {ex['title']}: input too long, skipping")
+            continue
+
+        t0 = time.time()
+        outputs = model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=2048,
+            temperature=0.1,
+            top_p=0.95,
+            do_sample=True,
+        )
+        elapsed = time.time() - t0
+
+        generated = tokenizer.decode(outputs[0][input_len:], skip_special_tokens=True)
+        pred_rels = parse_csv_output(generated)
+        pred_names = {r["name"] for r in pred_rels}
+        pred_pairs = {(r["name"], r["relationship"]) for r in pred_rels}
+
+        format_ok = len(pred_rels) > 0
+        name_hits = len(golden_names & pred_names)
+        exact_hits = len(golden_pairs & pred_pairs)
+
+        metrics["format_valid"] += int(format_ok)
+        metrics["total_golden_rels"] += len(golden_rels)
+        metrics["total_predicted_rels"] += len(pred_rels)
+        metrics["name_matches"] += name_hits
+        metrics["exact_matches"] += exact_hits
+
+        sample_info = {
+            "qid": ex["qid"],
+            "title": ex["title"],
+            "golden_count": len(golden_rels),
+            "predicted_count": len(pred_rels),
+            "name_recall": name_hits / len(golden_names) if golden_names else 0,
+            "exact_match_rate": exact_hits / len(golden_rels) if golden_rels else 0,
+            "format_valid": format_ok,
+            "time_seconds": round(elapsed, 1),
+        }
+        metrics["per_sample"].append(sample_info)
+
+        print(
+            f"  [{i+1}/{len(samples)}] {ex['title']}: "
+            f"golden={len(golden_rels)}, pred={len(pred_rels)}, "
+            f"name_recall={sample_info['name_recall']:.2f}, "
+            f"exact_match={sample_info['exact_match_rate']:.2f}, "
+            f"time={elapsed:.1f}s"
+        )
+
+    n = len(metrics["per_sample"])
+    if n > 0:
+        metrics["summary"] = {
+            "samples_evaluated": n,
+            "format_compliance": metrics["format_valid"] / n,
+            "avg_name_recall": sum(s["name_recall"] for s in metrics["per_sample"]) / n,
+            "avg_exact_match_rate": sum(s["exact_match_rate"] for s in metrics["per_sample"]) / n,
+            "overall_name_recall": metrics["name_matches"] / metrics["total_golden_rels"] if metrics["total_golden_rels"] else 0,
+            "overall_exact_match": metrics["exact_matches"] / metrics["total_golden_rels"] if metrics["total_golden_rels"] else 0,
+            "avg_time_per_sample": sum(s["time_seconds"] for s in metrics["per_sample"]) / n,
+        }
+
+    # Compute P/R/F1
+    golden_total = metrics["total_golden_rels"]
+    predicted_total = metrics["total_predicted_rels"]
+    comparison = {}
+    for label, key in [("name", "name_matches"), ("tuple", "exact_matches")]:
+        tp = metrics[key]
+        fp = predicted_total - tp
+        fn = golden_total - tp
+        precision = tp / predicted_total if predicted_total else 0
+        recall = tp / golden_total if golden_total else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
+        comparison[label] = {"tp": tp, "fp": fp, "fn": fn, "precision": precision, "recall": recall, "f1": f1}
+        print(f"  {label.title()}: P={precision:.1%}  R={recall:.1%}  F1={f1:.1%}  TP={tp}  FP={fp}  FN={fn}")
+
+    metrics["comparison"] = comparison
+
+    # Strip per-sample details for file size
+    summary_metrics = {k: v for k, v in metrics.items() if k != "per_sample"}
+    summary_metrics["per_sample_count"] = n
+
+    del model, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return summary_metrics
+
+
+def main():
+    print(f"\n{'='*72}")
+    print(f"  QWEN3.5-35B-A3B (MoE) TRAINING RUN")
+    print(f"  Model: {MODEL_NAME}")
+    print(f"  Tag: {TAG}, Articles: {NUM_ARTICLES}")
+    print(f"  Mode: bf16 LoRA (NOT QLoRA) on A100")
+    print(f"  Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*72}\n")
+
+    output_dir = BASE_DIR / "output" / TAG
+    checkpoint_dir = BASE_DIR / "checkpoints" / TAG
+    eval_output = BASE_DIR / "data" / f"eval_results_{TAG}.json"
+
+    # Load data
+    full_train = json.loads(FULL_TRAIN_PATH.read_text())
+    eval_data = json.loads(EVAL_PATH.read_text())
+
+    # Subsample (same seed=42, same 1000 articles as other model comparisons)
+    train_subset = subsample_data(full_train, NUM_ARTICLES)
+    print(f"Subsampled {len(train_subset)} training examples from {len(full_train)}")
+
+    # Save subsample for reproducibility
+    subset_path = BASE_DIR / "data" / f"train_{TAG}.json"
+    subset_path.write_text(json.dumps(train_subset))
+    print(f"Saved training subset to {subset_path}")
+
+    # Train
+    print(f"\n--- Training [{time.strftime('%H:%M:%S')}] ---")
+    train_stats = train_model(train_subset, output_dir, checkpoint_dir)
+    print(f"\nTraining stats: {json.dumps(train_stats, indent=2)}")
+
+    # Evaluate
+    print(f"\n--- Evaluation [{time.strftime('%H:%M:%S')}] ---")
+    adapter_path = str(output_dir / "lora_adapter")
+    eval_results = evaluate_model(eval_data, adapter_path, num_samples=50)
+
+    # Save eval results
+    eval_output.write_text(json.dumps(eval_results, indent=2))
+    print(f"\nEval results saved to {eval_output}")
+
+    print(f"\n{'='*72}")
+    print(f"  DONE: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Train loss: {train_stats['train_loss']:.4f}")
+    print(f"  Train time: {train_stats['train_runtime_seconds']/60:.1f} min")
+    if "summary" in eval_results:
+        print(f"  Format compliance: {eval_results['summary']['format_compliance']:.1%}")
+    if "comparison" in eval_results:
+        name_f1 = eval_results["comparison"]["name"]["f1"]
+        tuple_f1 = eval_results["comparison"]["tuple"]["f1"]
+        print(f"  Name F1: {name_f1:.1%}")
+        print(f"  Tuple F1: {tuple_f1:.1%}")
+    print(f"{'='*72}")
+
+
+if __name__ == "__main__":
+    main()
