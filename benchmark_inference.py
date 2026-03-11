@@ -40,6 +40,11 @@ MODELS = [
         "base": "unsloth/Qwen3.5-4B",
         "adapter": "output/1000art_qwen35_4b/lora_adapter",
     },
+    {
+        "tag": "Nanbeige4.1-3B (1000-art)",
+        "base": "Nanbeige/Nanbeige4.1-3B",
+        "adapter": "output/1000art_nanbeige41_3b/lora_adapter",
+    },
 ]
 
 
