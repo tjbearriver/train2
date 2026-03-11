@@ -138,10 +138,25 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         processing_class=tokenizer,
     )
 
+    # Detect chat template format for train_on_responses_only
+    sample_text = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}],
+        tokenize=False, add_generation_prompt=False,
+    )
+    if "<|im_start|>" in sample_text:
+        inst_part = "<|im_start|>user\n"
+        resp_part = "<|im_start|>assistant\n"
+    elif "<|start_header_id|>" in sample_text:
+        inst_part = "<|start_header_id|>user<|end_header_id|>\n\n"
+        resp_part = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    else:
+        raise ValueError(f"Unknown chat template format. Sample: {sample_text[:200]}")
+    print(f"Chat template detected: instruction_part={inst_part!r}, response_part={resp_part!r}")
+
     trainer = train_on_responses_only(
         trainer,
-        instruction_part="<|im_start|>user\n",
-        response_part="<|im_start|>assistant\n",
+        instruction_part=inst_part,
+        response_part=resp_part,
     )
 
     print(f"Total optimizer steps: ~{total_steps}")
