@@ -182,7 +182,7 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 
 **Warmup**: 5% of total steps (~44 steps) instead of fixed 20. Proportional warmup scales better with the larger dataset.
 
-### Phase B: LR Sweep (1000 articles)
+### Phase B: LR Sweep (COMPLETE 2026-03-12)
 
 **What**: Sweep lr ∈ {5e-5, 1e-4} on the 1000-article dataset (same subsample as baseline, seed=42). lr=2e-4 is the existing baseline.
 
@@ -200,35 +200,55 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 
 **Comparison baseline**: `output/1000art_qwen35_9b/` (lr=2e-4, Tuple F1=73.4%).
 
-### Phase C: Rank Sweep (LAUNCHED 2026-03-12)
+**Results**:
+
+| LR | Train Loss | Train Time | Tuple P | Tuple R | **Tuple F1** | Name F1 | vs Baseline |
+|------|------------|------------|---------|---------|--------------|---------|-------------|
+| 5e-5 | 0.0777 | 7.5 hr | 69.3% | 76.3% | **72.6%** | 86.5% | -0.8pp |
+| 1e-4 | 0.0688 | 10.4 hr | 70.1% | 76.1% | **73.0%** | 86.8% | -0.4pp |
+| 2e-4 (baseline) | 0.0430 | 5.4 hr | — | — | **73.4%** | 86.4% | — |
+
+**Key findings**:
+1. **Baseline lr=2e-4 remains optimal.** Both lower LRs produced marginally worse Tuple F1.
+2. All three LRs converge to nearly identical eval performance (72.6–73.4% Tuple F1), confirming LR is NOT a significant lever for this task.
+3. Lower LR → higher avg train loss (5e-5: 0.078, 1e-4: 0.069, 2e-4: 0.043) but no F1 improvement — the lower train loss at lr=2e-4 doesn't indicate overfitting, it's just faster convergence.
+4. Name F1 is essentially identical across all three LRs (86.4–86.8%).
+5. **Recommendation**: Keep lr=2e-4 for the full data run (Phase A). No benefit to reducing LR.
+
+**Pods** (can be terminated):
+- B_lr1e4: `7c2lhjsoqtqm46` — Tuple F1=73.0%
+- B_lr5e5: `yku3q5f4ee86uv` — Tuple F1=72.6%
+
+### Phase C: Rank Sweep (COMPLETE 2026-03-12)
 
 **What**: Test r ∈ {16, 32, 128} on the 1000-article dataset (same subsample as baseline, seed=42). lr=2e-4 (baseline).
 
 **Hardware**: 3× RTX 5090 on runpod (parallel).
 
-**Timing**: 3 runs in parallel, ~5.5 hr each = ~6 hr wall clock.
-
-**Cost**: ~$15 (3 pods × ~6 hr × <$0.80/hr).
-
 **Script**: `train_phase_c.py` — parameterized by `--rank` and `--tag`, uses 1000-article subsample.
-
-**Launch**: `launch_phase_c.py` — provisions 3 pods, one per rank value.
 
 **Output directories**: `output/phase_c_r16/`, `output/phase_c_r32/`, `output/phase_c_r128/`.
 
-**Comparison baseline**: `output/1000art_qwen35_9b/` (r=64, Tuple F1=73.4%).
+**Results**:
 
-**Pods**:
-- r=16: `hvn4ebzhagkim3` — ssh root@103.196.86.120 -p 14056 — 29M params (0.31%)
-- r=32: `2sx9f3xnlpmvt6` — ssh root@74.2.96.45 -p 19452 — 58M params (0.61%)
-- r=128: `tlvi73quoi5ig0` — ssh root@103.196.86.205 -p 16629 — ~232M params (2.4%)
+| Rank | Params | Train Loss | Train Time | Tuple P | Tuple R | **Tuple F1** | Name F1 | vs Baseline |
+|------|--------|------------|------------|---------|---------|--------------|---------|-------------|
+| r=16 | 29M (0.31%) | 0.0717 | 6.0 hr | 73.7% | 76.5% | **75.1%** | 87.9% | **+1.7pp** |
+| r=32 | 58M (0.61%) | 0.0664 | 8.8 hr | 70.9% | 75.7% | **73.2%** | 85.9% | -0.2pp |
+| r=64 (baseline) | 116M (1.22%) | 0.0430 | 5.4 hr | — | — | **73.4%** | 87.6% | — |
+| r=128 | 232M (2.41%) | 0.0550 | 6.2 hr | 73.0% | 75.6% | **74.3%** | 89.4% | +0.9pp |
 
-**Monitor**:
-```
-ssh root@103.196.86.120 -p 14056 'tail -f /workspace/train7/output/phase_c_r16/train.log'
-ssh root@74.2.96.45 -p 19452 'tail -f /workspace/train7/output/phase_c_r32/train.log'
-ssh root@103.196.86.205 -p 16629 'tail -f /workspace/train7/output/phase_c_r128/train.log'
-```
+**Key findings**:
+1. **r=16 is the best rank** at 75.1% Tuple F1 — the smallest adapter generalizes best on 1000 articles.
+2. Inverse relationship between training loss and Tuple F1: r=16 has the highest train loss (0.072) but best eval. r=64 baseline has lower train loss (0.043) but worse F1. Confirms overfitting at higher ranks on 1000 articles.
+3. r=128 has the best Name F1 (89.4%) despite not winning on Tuple F1 — more capacity helps name extraction but hurts tuple precision.
+4. r=32 underperforms — both lower Tuple F1 (73.2%) and lower Name F1 (85.9%) than baseline. May be a "worst of both worlds" capacity.
+5. **Recommendation**: Use r=16 for the full data run (Phase A). The smaller adapter's superior generalization should combine well with 4.7× more data.
+
+**Pods** (terminated):
+- r=16: `hvn4ebzhagkim3` — 29M params — Tuple F1=75.1%
+- r=32: `2sx9f3xnlpmvt6` — 58M params — Tuple F1=73.2%
+- r=128: `tlvi73quoi5ig0` — 232M params — Tuple F1=74.3%
 
 ### Phase D: Extended Context (Nuclear Option)
 
@@ -261,24 +281,29 @@ ssh root@103.196.86.205 -p 16629 'tail -f /workspace/train7/output/phase_c_r128/
 
 All experiments use the same 50-sample eval set and report Tuple F1, Name F1, train loss, and time.
 
-| ID | Phase | Variable | Value | Articles | max_seq | LR | r | Epochs | Est. Time | GPU |
-|----|-------|----------|-------|----------|---------|------|---|--------|-----------|-----|
-| A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 64 | 3 | 25 hr | 5090 |
-| B1 | B | LR | 1e-4 | 1000 | 8192 | 1e-4 | 64 | 3 | 5.5 hr | 5090 |
-| B2 | B | LR | 5e-5 | 1000 | 8192 | 5e-5 | 64 | 3 | 5.5 hr | 5090 |
-| C1 | C | Rank | 16 | 1000 | 8192 | 2e-4 | 16 | 3 | 5.5 hr | 5090 |
-| C2 | C | Rank | 32 | 1000 | 8192 | 2e-4 | 32 | 3 | 5.5 hr | 5090 |
-| C3 | C | Rank | 128 | 1000 | 8192 | 2e-4 | 128 | 3 | 5.5 hr | 5090 |
-| D1 | D | Context | 16384 | ~8500 | 16384 | best | best | 3 | 50–70 hr | H100 |
+| ID | Phase | Variable | Value | Articles | max_seq | LR | r | Epochs | Time | GPU | Tuple F1 |
+|----|-------|----------|-------|----------|---------|------|---|--------|------|-----|----------|
+| BL | — | Baseline | — | 1000 | 8192 | 2e-4 | 64 | 3 | 5.4 hr | 5090 | 73.4% |
+| C1 | C | Rank | 16 | 1000 | 8192 | 2e-4 | 16 | 3 | 6.0 hr | 5090 | **75.1%** ✅ |
+| C2 | C | Rank | 32 | 1000 | 8192 | 2e-4 | 32 | 3 | 8.8 hr | 5090 | 73.2% |
+| C3 | C | Rank | 128 | 1000 | 8192 | 2e-4 | 128 | 3 | 6.2 hr | 5090 | 74.3% |
+| A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 16* | 3 | ~25 hr | 5090 | — |
+| B1 | B | LR | 1e-4 | 1000 | 8192 | 1e-4 | 64 | 3 | 10.4 hr | 5090 | 73.0% |
+| B2 | B | LR | 5e-5 | 1000 | 8192 | 5e-5 | 64 | 3 | 7.5 hr | 5090 | 72.6% |
+| D1 | D | Context | 16384 | ~8500 | 16384 | best | best | 3 | 50–70 hr | H100 | — |
+
+\* Phase A should now use r=16 (Phase C winner) instead of r=64.
 
 ### Decision Points
 
+Phase B complete — **lr=2e-4 (baseline) is optimal** (73.4% Tuple F1). Lower LRs gave 72.6–73.0%, within noise but not better. LR is not a significant lever.
+
+Phase C complete — **r=16 is optimal** (75.1% Tuple F1, +1.7pp over baseline r=64).
+
 ```
-Phase A result → Tuple F1
-  ├─ ≥82%  → Skip B/C/D, go to Phase E (export & deploy)
-  ├─ 78–82% → Run Phase B (LR sweep) to push higher  
-  ├─ 74–78% → Run Phase B + C (LR + rank sweep)
-  └─ <74%  → Something is wrong — debug, check data, consider Phase D
+Next steps:
+  ├─ Phase A: Full 4726 articles with r=16, lr=2e-4 (expected 78-82% based on scaling)
+  └─ Phase D: 16384 context (only if Phase A < 82%)
 ```
 
 ---
@@ -332,6 +357,6 @@ For reference, the **golden ceiling** (Grok-4-fast teacher model) has imperfect 
 - make logs easy to track for me in case I want to probe them independently
 - use rclone for downloading from runpod
 - upload code+data via rsync/scp over SSH to the pod
-- continuously monitor the training and give me regular updates (at least once per hour)
+- continuously monitor the training and give me regular updates every 15min
 - each phase gets its own output directory so multiple phases can run in parallel on separate pods
 - when finished with a pod, download all of the important artifacts and then delete the pod
