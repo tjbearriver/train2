@@ -200,17 +200,35 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 
 **Comparison baseline**: `output/1000art_qwen35_9b/` (lr=2e-4, Tuple F1=73.4%).
 
-### Phase C: Rank Sweep (If Phase B Doesn't Reach Target)
+### Phase C: Rank Sweep (LAUNCHED 2026-03-12)
 
-**What**: Test r ∈ {16, 32, 128} with the best LR from Phase B on the full dataset.
+**What**: Test r ∈ {16, 32, 128} on the 1000-article dataset (same subsample as baseline, seed=42). lr=2e-4 (baseline).
 
-**Hardware**: 1× RTX 5090 on runpod.
+**Hardware**: 3× RTX 5090 on runpod (parallel).
 
-**Timing**: 3 runs × ~27 hr = ~81 hr sequentially. Or 3 machines in parallel (~27 hr).
+**Timing**: 3 runs in parallel, ~5.5 hr each = ~6 hr wall clock.
 
-**Cost**: ~$60 sequential, same parallel.
+**Cost**: ~$15 (3 pods × ~6 hr × <$0.80/hr).
+
+**Script**: `train_phase_c.py` — parameterized by `--rank` and `--tag`, uses 1000-article subsample.
+
+**Launch**: `launch_phase_c.py` — provisions 3 pods, one per rank value.
 
 **Output directories**: `output/phase_c_r16/`, `output/phase_c_r32/`, `output/phase_c_r128/`.
+
+**Comparison baseline**: `output/1000art_qwen35_9b/` (r=64, Tuple F1=73.4%).
+
+**Pods**:
+- r=16: `hvn4ebzhagkim3` — ssh root@103.196.86.120 -p 14056 — 29M params (0.31%)
+- r=32: `2sx9f3xnlpmvt6` — ssh root@74.2.96.45 -p 19452 — 58M params (0.61%)
+- r=128: `tlvi73quoi5ig0` — ssh root@103.196.86.205 -p 16629 — ~232M params (2.4%)
+
+**Monitor**:
+```
+ssh root@103.196.86.120 -p 14056 'tail -f /workspace/train7/output/phase_c_r16/train.log'
+ssh root@74.2.96.45 -p 19452 'tail -f /workspace/train7/output/phase_c_r32/train.log'
+ssh root@103.196.86.205 -p 16629 'tail -f /workspace/train7/output/phase_c_r128/train.log'
+```
 
 ### Phase D: Extended Context (Nuclear Option)
 
@@ -248,9 +266,9 @@ All experiments use the same 50-sample eval set and report Tuple F1, Name F1, tr
 | A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 64 | 3 | 25 hr | 5090 |
 | B1 | B | LR | 1e-4 | 1000 | 8192 | 1e-4 | 64 | 3 | 5.5 hr | 5090 |
 | B2 | B | LR | 5e-5 | 1000 | 8192 | 5e-5 | 64 | 3 | 5.5 hr | 5090 |
-| C1 | C | Rank | 16 | 4726 | 8192 | best | 16 | 3 | 20 hr | 5090 |
-| C2 | C | Rank | 32 | 4726 | 8192 | best | 32 | 3 | 22 hr | 5090 |
-| C3 | C | Rank | 128 | 4726 | 8192 | best | 128 | 3 | 30 hr | 5090 |
+| C1 | C | Rank | 16 | 1000 | 8192 | 2e-4 | 16 | 3 | 5.5 hr | 5090 |
+| C2 | C | Rank | 32 | 1000 | 8192 | 2e-4 | 32 | 3 | 5.5 hr | 5090 |
+| C3 | C | Rank | 128 | 1000 | 8192 | 2e-4 | 128 | 3 | 5.5 hr | 5090 |
 | D1 | D | Context | 16384 | ~8500 | 16384 | best | best | 3 | 50–70 hr | H100 |
 
 ### Decision Points
@@ -316,3 +334,4 @@ For reference, the **golden ceiling** (Grok-4-fast teacher model) has imperfect 
 - upload code+data via rsync/scp over SSH to the pod
 - continuously monitor the training and give me regular updates (at least once per hour)
 - each phase gets its own output directory so multiple phases can run in parallel on separate pods
+- when finished with a pod, download all of the important artifacts and then delete the pod
