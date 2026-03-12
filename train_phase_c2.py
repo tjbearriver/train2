@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""Phase C2: LoRA rank sweep on FULL 4,726 articles using bf16 LoRA.
+
+Like Phase A (full data) but parameterized by LoRA rank (like Phase C).
+Tests whether r=16 (Phase C winner on 1000 art) holds on full data,
+and whether r=8 generalizes even better.
+
+Usage:
+  mkdir -p output/phase_c2_r8  && python -u train_phase_c2.py --rank 8  --tag phase_c2_r8  2>&1 | tee output/phase_c2_r8/train.log
+  mkdir -p output/phase_c2_r16 && python -u train_phase_c2.py --rank 16 --tag phase_c2_r16 2>&1 | tee output/phase_c2_r16/train.log
+"""
+
+import argparse
+import gc
+import json
+import re
+import time
+from pathlib import Path
+
+import torch
+
+BASE_DIR = Path(__file__).resolve().parent
+FULL_TRAIN_PATH = BASE_DIR / "data" / "train.json"
+EVAL_PATH = BASE_DIR / "data" / "eval.json"
+MAX_SEQ_LENGTH = 8192
+
+MODEL_NAME = "unsloth/Qwen3.5-9B"
+
+LORA_TARGET_MODULES = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj",
+]
+
+EPOCHS = 3
+BATCH_SIZE = 1
+GRAD_ACCUM = 16
+LEARNING_RATE = 2e-4
+WARMUP_RATIO = 0.05
+LR_SCHEDULER = "cosine"
+OPTIMIZER = "adamw_8bit"
+LOGGING_STEPS = 5
+
+REL_PATTERN = re.compile(r"^([A-Z\-]+)\(([^/]+)/([^)]+)\)$")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Phase C2: LoRA rank sweep on full data")
+    parser.add_argument("--rank", type=int, required=True, help="LoRA rank (e.g. 8, 16)")
+    parser.add_argument("--tag", type=str, required=True, help="Run tag for output dir (e.g. phase_c2_r8)")
+    return parser.parse_args()
+
+
+def parse_csv_output(text: str) -> list[dict]:
+    """Parse model CSV output into list of {name, relationship} dicts."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    results = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line or line.startswith("```"):
+            continue
+        parts = line.split(",", 2)
+        if len(parts) < 2:
+            continue
+        name = parts[0].strip()
+        rel = parts[1].strip()
+        if name and REL_PATTERN.match(rel):
+            results.append({"name": name.lower(), "relationship": rel})
+    return results
+
+
+def train_model(train_data: list[dict], output_dir: Path, checkpoint_dir: Path, lora_r: int, tag: str):
+    """Train a LoRA adapter on the given data using bf16 LoRA (not QLoRA)."""
+    from unsloth import FastLanguageModel
+    from unsloth.chat_templates import train_on_responses_only
+    from datasets import Dataset
+    from trl import SFTConfig, SFTTrainer
+
+    lora_alpha = lora_r  # alpha = rank (standard practice)
+
+    print(f"Training {MODEL_NAME} on {len(train_data)} examples (bf16 LoRA)")
+    print(f"LoRA rank: r={lora_r}, alpha={lora_alpha}")
+    print(f"Learning rate: {LEARNING_RATE}")
+    print(f"Output: {output_dir}")
+
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=MODEL_NAME,
+        max_seq_length=MAX_SEQ_LENGTH,
+        load_in_4bit=False,
+        load_in_16bit=True,
+        full_finetuning=False,
+    )
+
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=lora_r,
+        target_modules=LORA_TARGET_MODULES,
+        lora_alpha=lora_alpha,
+        lora_dropout=0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=42,
+    )
+    model.print_trainable_parameters()
+
+    def formatting_func(examples):
+        texts = []
+        for convos in examples["conversations"]:
+            text = tokenizer.apply_chat_template(convos, tokenize=False, add_generation_prompt=False)
+            texts.append(text)
+        return {"text": texts}
+
+    dataset = Dataset.from_list(train_data)
+    dataset = dataset.map(formatting_func, batched=True)
+
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    total_steps = (len(train_data) * EPOCHS) // (BATCH_SIZE * GRAD_ACCUM)
+    save_steps = max(total_steps // 3, 10)
+
+    training_args = SFTConfig(
+        output_dir=str(checkpoint_dir),
+        num_train_epochs=EPOCHS,
+        per_device_train_batch_size=BATCH_SIZE,
+        gradient_accumulation_steps=GRAD_ACCUM,
+        learning_rate=LEARNING_RATE,
+        warmup_ratio=WARMUP_RATIO,
+        lr_scheduler_type=LR_SCHEDULER,
+        optim=OPTIMIZER,
+        bf16=True,
+        logging_steps=LOGGING_STEPS,
+        save_steps=save_steps,
+        save_total_limit=2,
+        seed=42,
+        report_to="none",
+        max_grad_norm=1.0,
+        dataloader_num_workers=4,
+        max_length=MAX_SEQ_LENGTH,
+        eos_token=None,
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset,
+        processing_class=tokenizer,
+    )
+
+    # Detect chat template format for train_on_responses_only
+    sample_text = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}],
+        tokenize=False, add_generation_prompt=False,
+    )
+    if "<|im_start|>" in sample_text:
+        inst_part = "<|im_start|>user\n"
+        resp_part = "<|im_start|>assistant\n"
+    elif "<|start_header_id|>" in sample_text:
+        inst_part = "<|start_header_id|>user<|end_header_id|>\n\n"
+        resp_part = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    else:
+        raise ValueError(f"Unknown chat template format. Sample: {sample_text[:200]}")
+    print(f"Chat template: instruction_part={inst_part!r}, response_part={resp_part!r}")
+
+    trainer = train_on_responses_only(
+        trainer,
+        instruction_part=inst_part,
+        response_part=resp_part,
+    )
+
+    print(f"Total optimizer steps: ~{total_steps}")
+    print(f"Warmup steps: ~{int(total_steps * WARMUP_RATIO)}")
+    print(f"Save every {save_steps} steps")
+    t0 = time.time()
+    train_result = trainer.train()
+    elapsed = time.time() - t0
+
+    print(f"Training complete in {elapsed/3600:.2f} hours, loss={train_result.training_loss:.4f}")
+
+    # Save adapter
+    adapter_path = str(output_dir / "lora_adapter")
+    model.save_pretrained(adapter_path)
+    tokenizer.save_pretrained(adapter_path)
+
+    stats = {
+        "model_name": MODEL_NAME,
+        "tag": tag,
+        "train_loss": train_result.training_loss,
+        "train_runtime_seconds": elapsed,
+        "train_samples": len(train_data),
+        "epochs": EPOCHS,
+        "total_steps": total_steps,
+        "lora_r": lora_r,
+        "lora_alpha": lora_alpha,
+        "learning_rate": LEARNING_RATE,
+        "warmup_ratio": WARMUP_RATIO,
+        "quantization": "bf16 LoRA (not QLoRA)",
+        "max_seq_length": MAX_SEQ_LENGTH,
+    }
+    with open(output_dir / "training_stats.json", "w") as f:
+        json.dump(stats, f, indent=2)
+
+    # Free GPU memory before eval
+    del trainer, model, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return stats
+
+
+def evaluate_model(adapter_path: str, eval_data: list[dict], num_samples: int = 50) -> dict:
+    """Evaluate the fine-tuned model using bf16 (matching training precision)."""
+    from unsloth import FastLanguageModel
+    from peft import PeftModel
+
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=MODEL_NAME,
+        max_seq_length=MAX_SEQ_LENGTH,
+        load_in_4bit=False,
+        load_in_16bit=True,
+        full_finetuning=False,
+    )
+    model = PeftModel.from_pretrained(model, adapter_path)
+    FastLanguageModel.for_inference(model)
+
+    text_tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
+
+    samples = eval_data[:num_samples]
+    metrics = {
+        "total_samples": num_samples,
+        "format_valid": 0,
+        "total_golden_rels": 0,
+        "total_predicted_rels": 0,
+        "name_matches": 0,
+        "exact_matches": 0,
+        "per_sample": [],
+    }
+
+    for i, ex in enumerate(samples):
+        convos = ex["conversations"]
+        system_msg = convos[0]["content"]
+        user_msg = convos[1]["content"]
+        golden_output = convos[2]["content"]
+
+        golden_rels = parse_csv_output(golden_output)
+        golden_names = {r["name"] for r in golden_rels}
+        golden_pairs = {(r["name"], r["relationship"]) for r in golden_rels}
+
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ]
+
+        text = tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False,
+        )
+        input_ids = text_tokenizer.encode(text, return_tensors="pt").to(model.device)
+        attention_mask = torch.ones_like(input_ids)
+        input_len = input_ids.shape[1]
+
+        if input_len > MAX_SEQ_LENGTH - 1024:
+            print(f"  [{i+1}/{len(samples)}] {ex['title']}: input too long, skipping")
+            continue
+
+        t0 = time.time()
+        outputs = model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=2048,
+            temperature=0.1,
+            top_p=0.95,
+            do_sample=True,
+        )
+        elapsed = time.time() - t0
+
+        generated = tokenizer.decode(outputs[0][input_len:], skip_special_tokens=True)
+        pred_rels = parse_csv_output(generated)
+        pred_names = {r["name"] for r in pred_rels}
+        pred_pairs = {(r["name"], r["relationship"]) for r in pred_rels}
+
+        format_ok = len(pred_rels) > 0
+        name_hits = len(golden_names & pred_names)
+        exact_hits = len(golden_pairs & pred_pairs)
+
+        metrics["format_valid"] += int(format_ok)
+        metrics["total_golden_rels"] += len(golden_rels)
+        metrics["total_predicted_rels"] += len(pred_rels)
+        metrics["name_matches"] += name_hits
+        metrics["exact_matches"] += exact_hits
+
+        sample_info = {
+            "qid": ex["qid"],
+            "title": ex["title"],
+            "golden_count": len(golden_rels),
+            "predicted_count": len(pred_rels),
+            "name_recall": name_hits / len(golden_names) if golden_names else 0,
+            "exact_match_rate": exact_hits / len(golden_rels) if golden_rels else 0,
+            "format_valid": format_ok,
+            "time_seconds": round(elapsed, 1),
+        }
+        metrics["per_sample"].append(sample_info)
+
+        print(
+            f"  [{i+1}/{len(samples)}] {ex['title']}: "
+            f"golden={len(golden_rels)}, pred={len(pred_rels)}, "
+            f"name_recall={sample_info['name_recall']:.2f}, "
+            f"exact_match={sample_info['exact_match_rate']:.2f}, "
+            f"time={elapsed:.1f}s"
+        )
+
+    n = len(metrics["per_sample"])
+    if n > 0:
+        metrics["summary"] = {
+            "samples_evaluated": n,
+            "format_compliance": metrics["format_valid"] / n,
+            "avg_name_recall": sum(s["name_recall"] for s in metrics["per_sample"]) / n,
+            "avg_exact_match_rate": sum(s["exact_match_rate"] for s in metrics["per_sample"]) / n,
+            "overall_name_recall": metrics["name_matches"] / metrics["total_golden_rels"] if metrics["total_golden_rels"] else 0,
+            "overall_exact_match": metrics["exact_matches"] / metrics["total_golden_rels"] if metrics["total_golden_rels"] else 0,
+            "avg_time_per_sample": sum(s["time_seconds"] for s in metrics["per_sample"]) / n,
+        }
+
+    summary_metrics = {k: v for k, v in metrics.items() if k != "per_sample"}
+    summary_metrics["per_sample_count"] = n
+    return summary_metrics
+
+
+def compute_comparison(eval_results: dict) -> dict:
+    """Compute P/R/F1/FP from eval result counts."""
+    golden = eval_results["total_golden_rels"]
+    predicted = eval_results["total_predicted_rels"]
+    out = {}
+    for label, key in [("name", "name_matches"), ("tuple", "exact_matches")]:
+        tp = eval_results[key]
+        fp = predicted - tp
+        fn = golden - tp
+        precision = tp / predicted if predicted else 0
+        recall = tp / golden if golden else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
+        out[label] = {"tp": tp, "fp": fp, "fn": fn, "precision": precision, "recall": recall, "f1": f1}
+    out["total_golden"] = golden
+    out["total_predicted"] = predicted
+    out["format_compliance"] = eval_results["summary"]["format_compliance"]
+    return out
+
+
+def main():
+    args = parse_args()
+    lora_r = args.rank
+    tag = args.tag
+
+    print(f"\n{'='*72}")
+    print(f"  PHASE C2: RANK SWEEP (FULL DATA) — Qwen3.5-9B (bf16 LoRA)")
+    print(f"  Model: {MODEL_NAME}")
+    print(f"  LoRA Rank: r={lora_r}, alpha={lora_r}")
+    print(f"  Learning Rate: {LEARNING_RATE}")
+    print(f"  Data: ALL articles (no subsampling)")
+    print(f"  Tag: {tag}")
+    print(f"  Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*72}\n")
+
+    output_dir = BASE_DIR / "output" / tag
+    checkpoint_dir = BASE_DIR / "checkpoints" / tag
+    eval_output = BASE_DIR / "data" / f"eval_results_{tag}.json"
+
+    # Load ALL training data (no subsampling — full 4726 articles)
+    train_data = json.loads(FULL_TRAIN_PATH.read_text())
+    eval_data = json.loads(EVAL_PATH.read_text())
+    print(f"Full training set: {len(train_data)} articles")
+    print(f"Eval set: {len(eval_data)} examples")
+
+    # Train
+    print(f"\n--- Training [{time.strftime('%H:%M:%S')}] ---")
+    train_stats = train_model(train_data, output_dir, checkpoint_dir, lora_r, tag)
+    print(f"Training done [{time.strftime('%H:%M:%S')}]: loss={train_stats['train_loss']:.4f}, "
+          f"time={train_stats['train_runtime_seconds']/3600:.1f}hr")
+
+    # Evaluate
+    adapter_path = str(output_dir / "lora_adapter")
+    print(f"\n--- Evaluation [{time.strftime('%H:%M:%S')}] ---")
+    eval_results = evaluate_model(adapter_path, eval_data, 50)
+    eval_output.write_text(json.dumps(eval_results, indent=2))
+    print(f"Eval done [{time.strftime('%H:%M:%S')}]")
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # Results
+    comp = compute_comparison(eval_results)
+    print(f"\n{'='*72}")
+    print(f"  PHASE C2 RESULTS: r={lora_r} — {len(train_data)} articles (FULL DATA)")
+    print(f"{'='*72}")
+    print(f"  Format compliance: {comp['format_compliance']:.1%}")
+    print(f"  Name:  P={comp['name']['precision']:.1%}  R={comp['name']['recall']:.1%}  F1={comp['name']['f1']:.1%}  TP={comp['name']['tp']}  FP={comp['name']['fp']}  FN={comp['name']['fn']}")
+    print(f"  Tuple: P={comp['tuple']['precision']:.1%}  R={comp['tuple']['recall']:.1%}  F1={comp['tuple']['f1']:.1%}  TP={comp['tuple']['tp']}  FP={comp['tuple']['fp']}  FN={comp['tuple']['fn']}")
+    print(f"  Train loss: {train_stats['train_loss']:.4f}")
+    print(f"  Train time: {train_stats['train_runtime_seconds']/3600:.1f} hr")
+    print(f"  Completed: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    tuple_f1 = comp['tuple']['f1']
+    print(f"\n  >>> Tuple F1 = {tuple_f1:.1%} (r={lora_r}, full data) <<<")
+    print(f"{'='*72}\n")
+
+
+if __name__ == "__main__":
+    main()

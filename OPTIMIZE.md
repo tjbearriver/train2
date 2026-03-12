@@ -250,6 +250,29 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 - r=32: `2sx9f3xnlpmvt6` — 58M params — Tuple F1=73.2%
 - r=128: `tlvi73quoi5ig0` — 232M params — Tuple F1=74.3%
 
+### Phase C2: Lower Rank Sweep on Full Data (IN PROGRESS 2026-03-12)
+
+**What**: Test r ∈ {8, 16} on the full 4,726-article dataset. Phase C showed r=16 is optimal on 1000 articles — test whether the same rank holds on full data, and whether r=8 (even smaller) generalizes better.
+
+**Hardware**: 2× RTX 5090 on runpod (parallel).
+
+**Timing**: 2 runs × ~25 hr each, running in parallel = ~26 hr wall clock.
+
+**Cost**: ~$42 (2 pods × ~26 hr × <$0.80/hr).
+
+**Script**: `train_phase_c2.py` — parameterized by `--rank` and `--tag`, uses FULL 4726-article dataset (no subsampling).
+
+**Launch**: `launch_phase_c2.py` — provisions 2 pods, one per rank value.
+
+**Output directories**: `output/phase_c2_r8/`, `output/phase_c2_r16/`.
+
+**Comparison baseline**: Phase C results on 1000 articles (r=16: 75.1% Tuple F1) and Phase A target (78–82%).
+
+| Rank | Est. Params | Articles | Est. Time | Notes |
+|------|-------------|----------|-----------|-------|
+| r=8  | ~14M (0.15%) | 4726 | ~25 hr | Half of r=16, test lower bound |
+| r=16 | ~29M (0.31%) | 4726 | ~25 hr | Phase C winner, full data test |
+
 ### Phase D: Extended Context (Nuclear Option)
 
 **What**: Train at max_seq=16384 on an 80GB GPU, covering ~93% of articles (~8,500 training examples).
@@ -288,6 +311,8 @@ All experiments use the same 50-sample eval set and report Tuple F1, Name F1, tr
 | C2 | C | Rank | 32 | 1000 | 8192 | 2e-4 | 32 | 3 | 8.8 hr | 5090 | 73.2% |
 | C3 | C | Rank | 128 | 1000 | 8192 | 2e-4 | 128 | 3 | 6.2 hr | 5090 | 74.3% |
 | A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 16* | 3 | ~25 hr | 5090 | — |
+| C2a | C2 | Rank (full) | 8 | 4726 | 8192 | 2e-4 | 8 | 3 | ~25 hr | 5090 | — |
+| C2b | C2 | Rank (full) | 16 | 4726 | 8192 | 2e-4 | 16 | 3 | ~25 hr | 5090 | — |
 | B1 | B | LR | 1e-4 | 1000 | 8192 | 1e-4 | 64 | 3 | 10.4 hr | 5090 | 73.0% |
 | B2 | B | LR | 5e-5 | 1000 | 8192 | 5e-5 | 64 | 3 | 7.5 hr | 5090 | 72.6% |
 | D1 | D | Context | 16384 | ~8500 | 16384 | best | best | 3 | 50–70 hr | H100 | — |
