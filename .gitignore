@@ -1,3 +1,4 @@
+.env
 *.ndjson
 *.csv
 __pycache__/

@@ -1,0 +1,314 @@
+# Qwen3.5-9B Optimization Plan
+
+## Goal
+Maximize Tuple F1 for relationship extraction on Qwen3.5-9B, then deploy for fast inference over 2M+ articles.
+
+---
+
+## Current Baseline
+
+| Run | Articles | Tuple F1 | Name F1 | Loss | VRAM | Time | Hardware |
+|-----|----------|----------|---------|------|------|------|----------|
+| Qwen3.5-9B (1000 art) | 1000 | 73.4% | 86.4% | 0.063 | ~32 GB | 5.37 hr | 5090, bf16 LoRA r=64 |
+| Qwen3-8B (4726 art) | 4726 | 77.9% | 89.4% | 0.081 | ~15.4 GB | 13.8 hr | 5070 Ti, QLoRA r=64 |
+| Qwen3.5-35B-A3B (1000 art) | 1000 | 76.1% | 89.0% | 0.076 | ~75 GB | 8.0 hr | A100, bf16 LoRA r=16 |
+
+**Key observation**: Qwen3-8B with 4.7× more data (4726 vs 1000) still beats Qwen3.5-9B. The ablation study showed 1000→4726 articles gives +6.7pp Tuple F1 for Qwen3-8B. More data is the single biggest lever.
+
+**Loss curve (Qwen3.5-9B, 1000 art)**: 0.182 → 0.102 → 0.063 → 0.033 (final step). The model is still learning at epoch 3 but plateauing. Loss drops from 0.18 → 0.10 in epoch 1, then 0.10 → 0.05 in epoch 2, then 0.05 → 0.03 in epoch 3.
+
+---
+
+## Optimization Axes (Ranked by Expected Impact)
+
+### 1. MORE DATA (Highest Impact)
+
+**Why**: Every ablation run shows data volume is the #1 lever. Qwen3-8B saw: 100→500 (+34pp), 500→1000 (+11pp), 1000→4726 (+6.7pp Tuple F1). The pattern is logarithmic in dataset size but still yields meaningful gains at 4726.
+
+**Plan**: Train Qwen3.5-9B on the full 4726-article pool (currently only using 1000).
+
+| Experiment | Articles | Est. Steps | Est. Time (5090) | Est. Tuple F1 |
+|-----------|----------|------------|-------------------|---------------|
+| `9b_full_4726` | 4726 | ~886 | ~25 hr | 78–82% |
+
+**Rationale**: Extrapolating from Qwen3-8B scaling (71.2% → 77.9% = +6.7pp at 4.7× data) and noting Qwen3.5-9B already starts 2.2pp higher than Qwen3-8B at 1000 art, we expect 73.4% + 6–9pp ≈ 79–82%.
+
+**VRAM constraint**: At max_seq=8192, training uses ~32 GB on 5090. The full 4726 dataset is already filtered to ≤8192 tokens — no seq length change needed.
+
+### 2. HYPERPARAMETER TUNING (Medium Impact)
+
+The current hyperparameters were copied from the Qwen3-8B QLoRA run and never tuned for Qwen3.5-9B bf16 LoRA. Key parameters to sweep:
+
+#### 2a. Learning Rate
+Current: `2e-4`. This is standard for QLoRA but may be too high for bf16 LoRA (which has higher-precision gradients and no quantization noise to overcome).
+
+| Experiment | LR | Warmup | Notes |
+|-----------|------|--------|-------|
+| `lr_1e4` | 1e-4 | 5% of steps | Lower LR, standard for bf16 LoRA |
+| `lr_5e5` | 5e-5 | 5% of steps | Conservative, less overfitting risk |
+| `lr_2e4` (baseline) | 2e-4 | 20 steps | Current setting |
+
+**Expected impact**: 1–3pp Tuple F1. Lower LR often helps precision (fewer hallucinated relationships) at the cost of slightly lower recall.
+
+#### 2b. LoRA Rank
+Current: `r=64, alpha=64`. This is very high for bf16 LoRA — it trains 116M of 9.5B params (1.22%). The Qwen3.5-35B-A3B run used r=16 and got Tuple F1=76.1%.
+
+| Experiment | r | alpha | Trainable Params | Notes |
+|-----------|---|-------|-----------------|-------|
+| `r16` | 16 | 16 | ~29M (0.3%) | Lighter, less overfitting, faster |
+| `r32` | 32 | 32 | ~58M (0.6%) | Middle ground |
+| `r64` (baseline) | 64 | 64 | ~116M (1.2%) | Current, most capacity |
+| `r128` | 128 | 128 | ~232M (2.4%) | Maximum capacity, risk of overfitting |
+
+**Expected impact**: 0–2pp. r=64 may be overfitting on 1000 articles (loss reaches 0.033 which is very low). Dropping to r=32 might improve generalization. On the full 4726 dataset, r=64 should be fine.
+
+#### 2c. Epochs
+Current: 3. Final loss is 0.033 at epoch 3.
+
+| Experiment | Epochs | Notes |
+|-----------|--------|-------|
+| `ep1` | 1 | Faster, may underfit |
+| `ep2` | 2 | Sweet spot if overfitting at 3 |
+| `ep3` (baseline) | 3 | Current |
+| `ep5` | 5 | Only if loss curve shows room |
+
+**Expected impact**: 0–2pp. With full 4726 data, 3 epochs is likely still optimal (loss converges around 0.04–0.05). With 1000 data, 2 epochs might generalize better.
+
+#### 2d. Effective Batch Size
+Current: 1 × 16 = 16. Larger batches give smoother gradients but fewer updates.
+
+| Experiment | batch × grad_accum | Effective BS | Notes |
+|-----------|-------------------|--------------|-------|
+| `bs8` | 1 × 8 | 8 | More updates, noisier |
+| `bs16` (baseline) | 1 × 16 | 16 | Current |
+| `bs32` | 1 × 32 | 32 | Smoother, fewer updates |
+
+**Expected impact**: 0–1pp. Diminishing returns territory. 16 is fine.
+
+### 3. CONTEXT LENGTH (Medium Impact — Requires More VRAM)
+
+**Why**: max_seq=8192 covers only 61% of golden articles. Going to 16384 covers ~93%, adding ~3,800 more training examples. But bf16 LoRA at 16384 on a 9B model will OOM on 32GB.
+
+**Options**:
+- **48GB GPU (A6000)**: Could handle 16384 seq with bf16 LoRA.
+- **80GB GPU (A100/H100)**: Comfortable at 16384, could even try 32768. Expensive (~$2–4/hr).
+- **Gradient checkpointing + offloading**: Might squeeze 16384 onto 32GB but with massive slowdown.
+
+| Experiment | max_seq | GPU | Est. Articles | Est. Time | Notes |
+|-----------|---------|-----|---------------|-----------|-------|
+| `seq16k_a100` | 16384 | A100-80GB | ~8,500 | ~40–60 hr | 1.8× more data, 2× longer seqs |
+| `seq16k_h100` | 16384 | H100-80GB | ~8,500 | ~25–40 hr | Faster than A100 |
+
+**Expected impact**: 3–6pp from more data alone. Longer articles also tend to have more relationships, giving the model harder/more diverse examples.
+
+**Recommendation**: Only pursue if the full-4726 run at max_seq=8192 doesn't reach target quality. It's the most expensive optimization lever.
+
+### 4. DATA QUALITY (Low–Medium Impact)
+
+#### 4a. Confidence Filtering
+The golden dataset includes HIGH, MEDIUM, LOW confidence annotations from Grok-4-fast. Training only on HIGH-confidence examples would give cleaner labels but fewer examples.
+
+| Experiment | Filter | Est. Examples | Notes |
+|-----------|--------|---------------|-------|
+| `highonly` | HIGH only | ~3,000 (est) | Cleaner labels, less noise |
+| `highmed` | HIGH + MEDIUM | ~4,400 (est) | Remove low-confidence noise |
+| `all` (baseline) | All | 4,726 | Current |
+
+**Expected impact**: 0–2pp. Could improve precision by removing noisy labels. But losing data volume may offset gains.
+
+#### 4b. Hard Example Mining
+After the full-data run, identify articles where the model makes the most errors (FP and FN). Upsample these during a second fine-tuning pass.
+
+**Expected impact**: 1–3pp. Targeted at the tail of hard cases.
+
+### 5. INFERENCE OPTIMIZATION (Speed, Not Quality)
+
+For processing 2M+ articles, inference speed matters as much as quality.
+
+#### 5a. GGUF Export + llama.cpp
+Merge LoRA adapter into base model, convert to GGUF, quantize.
+
+| Quantization | Size (est) | Quality Impact | Speed (est, 5070 Ti) |
+|-------------|-----------|---------------|---------------------|
+| F16 | ~18 GB | None (baseline) | Slow, tight VRAM fit |
+| Q8_0 | ~9.5 GB | Negligible | ~15–20 tok/s |
+| Q5_K_M | ~6.5 GB | Minimal (<1pp) | ~20–30 tok/s |
+| Q4_K_M | ~5.5 GB | Small (1–2pp) | ~25–35 tok/s |
+
+**GGUF limitation for Qwen3.5**: As of March 2026, llama.cpp Qwen3.5 support is new. The Mamba/SSM hybrid layers may not be fully optimized. Verify with `llama.cpp` HEAD before committing.
+
+#### 5b. vLLM
+Unsloth docs say vLLM `0.17.0+` supports Qwen3.5. vLLM's paged attention + continuous batching can process multiple articles simultaneously.
+
+| Setup | Batch Size | Speed (est) | Notes |
+|-------|-----------|------------|-------|
+| vLLM bf16 | 4–8 concurrent | ~40–80 tok/s total | Needs 32GB+ VRAM for 9B bf16 |
+| vLLM AWQ-4bit | 8–16 concurrent | ~80–150 tok/s total | Lower VRAM, batch more |
+
+**Expected impact**: 3–10× throughput over sequential unsloth inference. Critical for 2M article processing.
+
+#### 5c. SGLang
+Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's involvement.
+
+#### 5d. `enable_thinking=False`
+**Mandatory** for all Qwen3.5 inference. Already documented in PLAN.md — thinking mode wastes tokens on internal reasoning that the model wasn't trained to use.
+
+---
+
+## Recommended Execution Plan
+
+### Phase A: Full Data Run (Highest Priority)
+
+**What**: Train Qwen3.5-9B on all 4,726 articles with current hyperparameters (bf16 LoRA r=64, lr=2e-4, 3 epochs).
+
+**Hardware**: 1× RTX 5090 (32GB) on runpod.
+
+**Timing**:
+- Upload data: ~5 min
+- Model download (cached after first run): ~5 min
+- Training: ~25 hours (886 steps × ~103s/step)
+- Evaluation (50 samples): ~1 hour
+- **Total wall clock: ~27 hours**
+
+**Cost**: ~$20 at <$0.80/hr (runpod).
+
+**Script**: `train_phase_a.py` — standalone script for Phase A, outputs to `output/phase_a/`.
+
+**Output directory**: `output/phase_a/` (separate from baseline `output/1000art_qwen35_9b/`).
+
+**Eval note**: Eval uses bf16 (matching training), not 4-bit like `eval_adapter.py` does.
+
+**Log file**: `output/phase_a/train.log` — all stdout/stderr captured via `tee`.
+
+**Warmup**: 5% of total steps (~44 steps) instead of fixed 20. Proportional warmup scales better with the larger dataset.
+
+### Phase B: LR Sweep (If Phase A Doesn't Exceed 80% Tuple F1)
+
+**What**: Sweep lr ∈ {5e-5, 1e-4, 2e-4} on the full 4726-article dataset. lr=2e-4 is already done in Phase A.
+
+**Hardware**: 1× RTX 5090 on runpod.
+
+**Timing**: 2 additional runs × ~27 hr = ~54 hr. Can run sequentially on one machine.
+
+**Cost**: ~$40.
+
+**Alternative**: Run Phase B in parallel on 2 machines (~27 hr wall clock, ~$40).
+
+**Output directories**: `output/phase_b_lr1e4/`, `output/phase_b_lr5e5/`.
+
+### Phase C: Rank Sweep (If Phase B Doesn't Reach Target)
+
+**What**: Test r ∈ {16, 32, 128} with the best LR from Phase B on the full dataset.
+
+**Hardware**: 1× RTX 5090 on runpod.
+
+**Timing**: 3 runs × ~27 hr = ~81 hr sequentially. Or 3 machines in parallel (~27 hr).
+
+**Cost**: ~$60 sequential, same parallel.
+
+**Output directories**: `output/phase_c_r16/`, `output/phase_c_r32/`, `output/phase_c_r128/`.
+
+### Phase D: Extended Context (Nuclear Option)
+
+**What**: Train at max_seq=16384 on an 80GB GPU, covering ~93% of articles (~8,500 training examples).
+
+**Hardware**: 1× H100-80GB on runpod (~$3.50/hr).
+
+**Timing**:
+- Training: ~50–70 hours (more data × longer sequences × slower per step)
+- **Total: ~3 days**
+
+**Cost**: ~$210–$250.
+
+**Only pursue if**: Phase A–C don't reach the target quality and data coverage is the bottleneck.
+
+### Phase E: Inference Optimization & Export
+
+**What**: Export best adapter to GGUF, benchmark quantization levels, test vLLM batched inference.
+
+**Hardware**: RTX 5070 Ti (local) or RTX 5090 (runpod).
+
+**Timing**:
+- Merge + GGUF export: ~30 min (CPU, local)
+- Benchmark 4 quantization levels: ~1 hr
+- vLLM setup + benchmark: ~2 hr
+
+---
+
+## Quick-Reference: Experiment Matrix
+
+All experiments use the same 50-sample eval set and report Tuple F1, Name F1, train loss, and time.
+
+| ID | Phase | Variable | Value | Articles | max_seq | LR | r | Epochs | Est. Time | GPU |
+|----|-------|----------|-------|----------|---------|------|---|--------|-----------|-----|
+| A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 64 | 3 | 25 hr | 5090 |
+| B1 | B | LR | 1e-4 | 4726 | 8192 | 1e-4 | 64 | 3 | 25 hr | 5090 |
+| B2 | B | LR | 5e-5 | 4726 | 8192 | 5e-5 | 64 | 3 | 25 hr | 5090 |
+| C1 | C | Rank | 16 | 4726 | 8192 | best | 16 | 3 | 20 hr | 5090 |
+| C2 | C | Rank | 32 | 4726 | 8192 | best | 32 | 3 | 22 hr | 5090 |
+| C3 | C | Rank | 128 | 4726 | 8192 | best | 128 | 3 | 30 hr | 5090 |
+| D1 | D | Context | 16384 | ~8500 | 16384 | best | best | 3 | 50–70 hr | H100 |
+
+### Decision Points
+
+```
+Phase A result → Tuple F1
+  ├─ ≥82%  → Skip B/C/D, go to Phase E (export & deploy)
+  ├─ 78–82% → Run Phase B (LR sweep) to push higher  
+  ├─ 74–78% → Run Phase B + C (LR + rank sweep)
+  └─ <74%  → Something is wrong — debug, check data, consider Phase D
+```
+
+---
+
+## Expected Final Performance
+
+Based on scaling trends across all models tested:
+
+| Scenario | Tuple F1 | Confidence |
+|----------|----------|------------|
+| Phase A only (full data, default HP) | 78–82% | High |
+| Phase A + B (best LR) | 80–84% | Medium |
+| Phase A + B + C (best LR + rank) | 81–85% | Medium |
+| Phase D (16384 context, 8500 art) | 83–88% | Low (uncertain) |
+
+For reference, the **golden ceiling** (Grok-4-fast teacher model) has imperfect labels too — Tuple F1 >90% may not be achievable with this evaluation methodology.
+
+---
+
+## Inference at Scale: 2M Articles
+
+### Processing Time Estimates
+
+| Method | tok/s | Time per article (est) | Total for 2M articles | GPU |
+|--------|-------|----------------------|----------------------|-----|
+| Unsloth bf16 sequential | ~10 | ~30s | ~694 days | 5090 |
+| llama.cpp Q5_K_M | ~25 | ~15s | ~347 days | 5070 Ti |
+| vLLM bf16 batch=8 | ~80 total | ~8s effective | ~185 days | 5090 |
+| vLLM Q4 batch=16 | ~150 total | ~4s effective | ~93 days | 5070 Ti |
+| 4× 5070 Ti parallel | ~100 (per GPU ~25) | ~4s effective | ~93 days | 4× 5070 Ti |
+
+**Recommendation**: Use llama.cpp Q5_K_M on local 5070 Ti for simplicity, or vLLM for maximum throughput. At ~15s/article with Q5_K_M, processing 2M articles takes ~347 days on 1 GPU — need parallelism or batching.
+
+### Practical Deployment
+1. Export best adapter → merged bf16 → GGUF Q5_K_M
+2. Run llama-server with OpenAI-compatible API
+3. Parallelize across CPU threads for article pre-processing
+4. Process articles in batches, save results incrementally
+5. Target: 4–8 GPUs or vLLM batching to finish in 1–3 months
+
+
+# Runpod Best Practices
+- use python sdk (use uv with '--with" for running and managing deps)
+- provision machines yourself using these guidelines:
+    - 1 x 5090
+    - secure cloud
+    - 250GB disk
+    - use on-demand (not spot)
+    - template: runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+- always run python unbuffered so that you can track logs (especially during the evaluation phase)
+- make logs easy to track for me in case I want to probe them independently
+- use rclone for downloading from runpod
+- upload code+data via rsync/scp over SSH to the pod
+- continuously monitor the training and give me regular updates (at least once per hour)
+- each phase gets its own output directory so multiple phases can run in parallel on separate pods
