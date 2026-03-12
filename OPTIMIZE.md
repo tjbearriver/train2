@@ -182,19 +182,23 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 
 **Warmup**: 5% of total steps (~44 steps) instead of fixed 20. Proportional warmup scales better with the larger dataset.
 
-### Phase B: LR Sweep (If Phase A Doesn't Exceed 80% Tuple F1)
+### Phase B: LR Sweep (1000 articles)
 
-**What**: Sweep lr ∈ {5e-5, 1e-4, 2e-4} on the full 4726-article dataset. lr=2e-4 is already done in Phase A.
+**What**: Sweep lr ∈ {5e-5, 1e-4} on the 1000-article dataset (same subsample as baseline, seed=42). lr=2e-4 is the existing baseline.
 
-**Hardware**: 1× RTX 5090 on runpod.
+**Hardware**: 2× RTX 5090 on runpod (parallel).
 
-**Timing**: 2 additional runs × ~27 hr = ~54 hr. Can run sequentially on one machine.
+**Timing**: 2 runs × ~5.5 hr each, running in parallel = ~6 hr wall clock.
 
-**Cost**: ~$40.
+**Cost**: ~$10 (2 pods × ~6 hr × <$0.80/hr).
 
-**Alternative**: Run Phase B in parallel on 2 machines (~27 hr wall clock, ~$40).
+**Script**: `train_phase_b.py` — parameterized by `--lr` and `--tag`, uses 1000-article subsample.
+
+**Launch**: `launch_phase_b.py` — provisions 2 pods, one per LR value.
 
 **Output directories**: `output/phase_b_lr1e4/`, `output/phase_b_lr5e5/`.
+
+**Comparison baseline**: `output/1000art_qwen35_9b/` (lr=2e-4, Tuple F1=73.4%).
 
 ### Phase C: Rank Sweep (If Phase B Doesn't Reach Target)
 
@@ -242,8 +246,8 @@ All experiments use the same 50-sample eval set and report Tuple F1, Name F1, tr
 | ID | Phase | Variable | Value | Articles | max_seq | LR | r | Epochs | Est. Time | GPU |
 |----|-------|----------|-------|----------|---------|------|---|--------|-----------|-----|
 | A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 64 | 3 | 25 hr | 5090 |
-| B1 | B | LR | 1e-4 | 4726 | 8192 | 1e-4 | 64 | 3 | 25 hr | 5090 |
-| B2 | B | LR | 5e-5 | 4726 | 8192 | 5e-5 | 64 | 3 | 25 hr | 5090 |
+| B1 | B | LR | 1e-4 | 1000 | 8192 | 1e-4 | 64 | 3 | 5.5 hr | 5090 |
+| B2 | B | LR | 5e-5 | 1000 | 8192 | 5e-5 | 64 | 3 | 5.5 hr | 5090 |
 | C1 | C | Rank | 16 | 4726 | 8192 | best | 16 | 3 | 20 hr | 5090 |
 | C2 | C | Rank | 32 | 4726 | 8192 | best | 32 | 3 | 22 hr | 5090 |
 | C3 | C | Rank | 128 | 4726 | 8192 | best | 128 | 3 | 30 hr | 5090 |

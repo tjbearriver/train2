@@ -28,10 +28,21 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def get_api_key():
+    # Load .env file from project directory if it exists
+    env_path = os.path.join(PROJECT_DIR, ".env")
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+
     key = os.environ.get("RUNPOD_API_KEY")
     if not key:
         print("ERROR: Set RUNPOD_API_KEY environment variable")
         print("  export RUNPOD_API_KEY=your_key_here")
+        print(f"  Or add it to {env_path}")
         sys.exit(1)
     runpod.api_key = key
     return key
@@ -234,8 +245,8 @@ def launch(
         train_command = (
             f"cd {remote_work_dir} && "
             f"mkdir -p {output_subdir} && "
-            f"nohup python -u {train_script} "
-            f"> >(tee {output_subdir}/train.log) 2>&1 &"
+            f"nohup bash -c 'python -u {train_script} 2>&1 | tee {output_subdir}/train.log' "
+            f"> /dev/null 2>&1 &"
         )
 
     get_api_key()
