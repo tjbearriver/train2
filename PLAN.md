@@ -204,7 +204,7 @@ Trained Qwen3-8B (`unsloth/Qwen3-8B-bnb-4bit`) with 100, 500, and 1000 articles 
 |----------|---------------|------------|------------|---------|----------|----------|-----------|
 | 100 | 100 | 0.215 | 17.1 min | 54.2% | 26.3% | 44.3% / 70.0% | 21.5% / 34.0% |
 | 500 | 500 | 0.143 | 86.0 min | 80.5% | 60.3% | 77.3% / 83.9% | 58.0% / 62.9% |
-| 1000 | 1000 | 0.112 | 175.4 min | 86.1% | 71.2% | 84.7% / 87.6% | 70.0% / 72.4% |
+| 1000 | 1000 | 0.112 | 2.92 hr | 86.1% | 71.2% | 84.7% / 87.6% | 70.0% / 72.4% |
 | 4726 (full) | 4726 | 0.081 | 13.8 hr | 89.4% | 77.9% | 87.8% / 91.1% | 76.5% / 79.4% |
 
 ### Ablation Analysis
@@ -247,17 +247,17 @@ All models trained on the same 1000-article subset (subsampled from the 4,726-ar
 | Model | Train Loss | Train Time | Name F1 | Tuple F1 | Inference tok/s | VRAM | Notes |
 |-------|-----------|------------|---------|----------|----------------|------|-------|
 | Qwen3-8B (4726 art) | 0.081 | 13.8 hr | 89.4% | 77.9% | 15.9 | ~15.4 GB | Full dataset, same model |
-| Qwen3.5-9B (4726 art) | 0.052 | 1742.7 min (29.0 hr) | 90.6% | **77.3%** | TBD | ~32 GB | VLM, bf16 LoRA r=64 (not QLoRA), full dataset, RTX 5090 — Phase A |
-| Qwen3.5-35B-A3B (1000 art) | 0.076 | 480.1 min (8.00 hr) | 89.0% | 76.1% | — | ~75 GB | MoE (36B/3B active), bf16 LoRA r=16 on A100-80GB, ~152s/step |
-| Qwen3.5-27B (1000 art) | 0.050 | 735.6 min (12.26 hr) | 87.6% | 73.8% | — | ~96 GB | VLM, bf16 LoRA on H100 NVL, ~234s/step |
-| Qwen3.5-9B (1000 art) | 0.063 | 322.4 min (5.37 hr) | 86.4% | 73.4% | TBD | ~32 GB | VLM, bf16 LoRA (not QLoRA), ~103s/step, trained on RTX 5090 |
-| Qwen3.5-4B-Opus (1000 art) | 0.068 | 670.0 min (11.17 hr) | 88.2% | 72.3% | TBD | ~14.6 GB | VLM, Claude-Opus distilled, ~215s/step, requires `</think>` fix |
-| Qwen3.5-4B (1000 art) | 0.068 | 669.7 min (11.16 hr) | 86.6% | 71.7% | 9.3 | ~14.6 GB | VLM, ~228s/step |
-| Qwen3-8B (1000 art) | 0.112 | 175.4 min | 86.1% | 71.2% | 16.1 | ~15.4 GB | Text-only, pre-quantized 4-bit, ~54s/step |
-| Llama-3.2-3B (1000 art) | 0.111 | 35.5 min | 85.3% | 71.2% | TBD | ~10 GB | Text-only, ~11s/step, trained on RTX 5090 |
-| Gemma3-4B (1000 art) | 0.126 | 257.9 min (4.30 hr) | 84.0% | 66.3% | 6.3 | ~15.5 GB | VLM, ~82.7s/step |
-| Nanbeige4.1-3B (1000 art) | 0.124 | 43.6 min (0.73 hr) | 81.2% | 64.4% | 23.1* | ~12.4 GB | Text-only, ~14.0s/step, *benchmarked on 5090 |
-| Qwen3.5-4B Abliterated (1000 art) | 0.068 | 289.8 min (4.83 hr) | 26.5% | 21.3% | 22.9* | ~17.1 GB | VLM, ~93s/step, trained+benchmarked on RTX 5090 |
+| Qwen3.5-9B (4726 art) | 0.052 | 29.0 hr | 90.6% | **77.3%** | TBD | ~32 GB | VLM, bf16 LoRA r=64 (not QLoRA), full dataset, RTX 5090 — Phase A |
+| Qwen3.5-35B-A3B (1000 art) | 0.076 | 8.00 hr | 89.0% | 76.1% | — | ~75 GB | MoE (36B/3B active), bf16 LoRA r=16 on A100-80GB, ~152s/step |
+| Qwen3.5-27B (1000 art) | 0.050 | 12.26 hr | 87.6% | 73.8% | — | ~96 GB | VLM, bf16 LoRA on H100 NVL, ~234s/step |
+| Qwen3.5-9B (1000 art) | 0.063 | 5.37 hr | 86.4% | 73.4% | TBD | ~32 GB | VLM, bf16 LoRA (not QLoRA), ~103s/step, trained on RTX 5090 |
+| Qwen3.5-4B-Opus (1000 art) | 0.068 | 11.17 hr | 88.2% | 72.3% | TBD | ~14.6 GB | VLM, Claude-Opus distilled, ~215s/step, requires `</think>` fix |
+| Qwen3.5-4B (1000 art) | 0.068 | 11.16 hr | 86.6% | 71.7% | 9.3 | ~14.6 GB | VLM, ~228s/step |
+| Qwen3-8B (1000 art) | 0.112 | 2.92 hr | 86.1% | 71.2% | 16.1 | ~15.4 GB | Text-only, pre-quantized 4-bit, ~54s/step |
+| Llama-3.2-3B (1000 art) | 0.111 | 0.59 hr | 85.3% | 71.2% | TBD | ~10 GB | Text-only, ~11s/step, trained on RTX 5090 |
+| Gemma3-4B (1000 art) | 0.126 | 4.30 hr | 84.0% | 66.3% | 6.3 | ~15.5 GB | VLM, ~82.7s/step |
+| Nanbeige4.1-3B (1000 art) | 0.124 | 0.73 hr | 81.2% | 64.4% | 23.1* | ~12.4 GB | Text-only, ~14.0s/step, *benchmarked on 5090 |
+| Qwen3.5-4B Abliterated (1000 art) | 0.068 | 4.83 hr | 26.5% | 21.3% | 22.9* | ~17.1 GB | VLM, ~93s/step, trained+benchmarked on RTX 5090 |
 
 ### Inference Speed Benchmark
 
