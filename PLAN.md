@@ -233,6 +233,7 @@ Training the same 1000-article subset across different model architectures to co
 | Qwen3.5-4B | `unsloth/Qwen3.5-4B` | Qwen3_5ForConditionalGeneration | ~4.6B | VLM (text+vision) |
 | Qwen3.5-9B | `unsloth/Qwen3.5-9B` | Qwen3_5ForConditionalGeneration | ~9.5B | VLM (text+vision) |
 | Nanbeige4.1-3B | `Nanbeige/Nanbeige4.1-3B` | LlamaForCausalLM | ~4B | Text-only |
+| Qwen3.5-4B-Claude-Opus | `Jackrong/Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled` | Qwen3_5ForConditionalGeneration | ~4.6B | VLM (text+vision), Claude-Opus reasoning distilled |
 | Qwen3.5-4B Abliterated | `SicariusSicariiStuff/Qwen3.5-4B_Abliterated` | Qwen3_5ForConditionalGeneration | ~4.6B | VLM (text+vision), abliterated |
 | Qwen3.5-9B | `unsloth/Qwen3.5-9B` | Qwen3_5ForConditionalGeneration | ~9B | VLM — OOM on 16GB |
 | Qwen3.5-27B | `unsloth/Qwen3.5-27B` | Qwen3_5ForConditionalGeneration | ~27B | VLM (text+vision), bf16 LoRA on H100 |
@@ -250,6 +251,7 @@ All models trained on the same 1000-article subset (subsampled from the 4,726-ar
 | Qwen3.5-35B-A3B (1000 art) | 0.076 | 480.1 min (8.00 hr) | 89.0% | 76.1% | — | ~75 GB | MoE (36B/3B active), bf16 LoRA r=16 on A100-80GB, ~152s/step |
 | Qwen3.5-27B (1000 art) | 0.050 | 735.6 min (12.26 hr) | 87.6% | 73.8% | — | ~96 GB | VLM, bf16 LoRA on H100 NVL, ~234s/step |
 | Qwen3.5-9B (1000 art) | 0.063 | 322.4 min (5.37 hr) | 86.4% | 73.4% | TBD | ~32 GB | VLM, bf16 LoRA (not QLoRA), ~103s/step, trained on RTX 5090 |
+| Qwen3.5-4B-Opus (1000 art) | 0.068 | 670.0 min (11.17 hr) | 88.2% | 72.3% | TBD | ~14.6 GB | VLM, Claude-Opus distilled, ~215s/step, requires `</think>` fix |
 | Qwen3.5-4B (1000 art) | 0.068 | 669.7 min (11.16 hr) | 86.6% | 71.7% | 9.3 | ~14.6 GB | VLM, ~228s/step |
 | Qwen3-8B (1000 art) | 0.112 | 175.4 min | 86.1% | 71.2% | 16.1 | ~15.4 GB | Text-only, pre-quantized 4-bit, ~54s/step |
 | Llama-3.2-3B (1000 art) | 0.111 | 35.5 min | 85.3% | 71.2% | TBD | ~10 GB | Text-only, ~11s/step, trained on RTX 5090 |
@@ -301,6 +303,7 @@ With `enable_thinking=False`, the prompt pre-closes the think block (`<think>\n\
 - **Qwen3-8B** is the fastest to train (~54s/step), fastest at inference (~16 tok/s), and delivers strong results. The full 4,726-article run reaches Tuple F1=77.9%. Clear winner on this hardware.
 - **Nanbeige4.1-3B**: Lowest quality (Tuple F1=64.4%, Name F1=81.2%) but fastest training (43.6 min, ~14s/step) and lowest VRAM (~12.4 GB). High inference speed on 5090 (23.1 tok/s) but not directly comparable to 5070 Ti benchmarks. Text-only LlamaForCausalLM architecture.
 - **Gemma3-4B**: Low quality (Tuple F1=66.3%) AND slowest inference (6.3 tok/s). Required SDPA attention workaround and checkpoint recomputation patch. Not recommended.
+- **Qwen3.5-4B-Claude-Opus**: Fine-tuned from `Jackrong/Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled`, a Claude-4.6-Opus reasoning-distilled variant of Qwen3.5-4B. **Best Name F1 (88.2%) among all 1000-art models**, and Tuple F1=72.3% — outperforms the base Qwen3.5-4B (+1.6pp Name F1, +0.6pp Tuple F1). Same train loss (0.068) and similar training time (~670 min). The tokenizer's chat template always injects `<think>\n` regardless of `enable_thinking=False`, requiring a manual `</think>\n` append to force-close the thinking block. Inference is very slow (~1 tok/s) due to VLM + reasoning architecture overhead. 48/50 eval samples processed (2 skipped: input too long).
 - **Qwen3.5-4B**: Slightly outperforms Qwen3-8B on quality (Tuple F1 71.7% vs 71.2%) but ~4× slower to train and ~1.7× slower at inference due to VLM overhead.
 - **Qwen3.5-9B**: Best Tuple F1 (73.4%) among 1000-art runs. Requires RTX 5090 (32GB) for bf16 LoRA training — OOMs on 16GB GPUs. Train loss 0.063 (lowest). ~103s/step, 5.37 hours total. Quality is comparable to Qwen3.5-4B (73.4% vs 71.7% Tuple F1) but trains 2× faster per step and benefits from larger model capacity.
 - **Llama-3.2-3B**: Matches Qwen3-8B's Tuple F1 (71.2%) with less than half the parameters (3.2B vs 8B). Fastest to train by far (~11s/step, 35.5 min total vs 175 min for Qwen3-8B). Only ~10GB VRAM during training. Strong format compliance (100%). A compelling lightweight option.
@@ -315,6 +318,7 @@ With `enable_thinking=False`, the prompt pre-closes the think block (`<think>\n\
 - Qwen3.5-35B-A3B (1000-art): `output/1000art_qwen35_35b/lora_adapter/` (bf16 LoRA, requires A100+)
 - Nanbeige4.1-3B (1000-art): `output/1000art_nanbeige41_3b/lora_adapter/`
 - Llama-3.2-3B (1000-art): `output/1000art_llama32_3b/lora_adapter/`
+- Qwen3.5-4B-Claude-Opus (1000-art): `output/1000art_qwen35_4b_opus/lora_adapter/`
 - Qwen3.5-4B Abliterated (1000-art): `output/1000art_qwen35_4b_abliterated/lora_adapter/`
 - Qwen3.5-9B (1000-art): `output/1000art_qwen35_9b/lora_adapter/`
 - Qwen3.5-9B (4726-art): `output/phase_a/phase_a/lora_adapter/` (bf16 LoRA r=64, Phase A)
@@ -345,6 +349,14 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 )
 model = PeftModel.from_pretrained(model, "output/1000art_qwen35_4b/lora_adapter")
 FastLanguageModel.for_inference(model)
+
+# For Qwen3.5-4B-Claude-Opus (requires </think> fix for inference)
+model, tokenizer = FastLanguageModel.from_pretrained(
+    "Jackrong/Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled", max_seq_length=8192, load_in_4bit=True,
+)
+model = PeftModel.from_pretrained(model, "output/1000art_qwen35_4b_opus/lora_adapter")
+FastLanguageModel.for_inference(model)
+# NOTE: After apply_chat_template(), append "</think>\n" to close the injected <think> block
 
 # For Qwen3.5-4B Abliterated
 model, tokenizer = FastLanguageModel.from_pretrained(
