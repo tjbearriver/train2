@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Train and evaluate a specific model on 1000 articles for cross-model comparison.
+"""Train and evaluate Qwen3.5-35B-A3B (MoE) on 1000 articles using bf16 LoRA on A100.
+
+Key differences from train_model_compare.py:
+  - Uses FastModel (not FastLanguageModel) for MoE models
+  - bf16 LoRA (load_in_16bit=True), NOT QLoRA 4-bit (per unsloth docs)
+  - Adapted for A100 80GB VRAM
 
 Usage:
-  python train_model_compare.py --model unsloth/Qwen3.5-9B --tag qwen35_9b
-  python train_model_compare.py --model unsloth/Qwen3.5-4B --tag qwen35_4b
+  python train_qwen35_35b.py
 """
 
-import argparse
 import gc
 import json
 import random
@@ -21,8 +24,11 @@ FULL_TRAIN_PATH = BASE_DIR / "data" / "train.json"
 EVAL_PATH = BASE_DIR / "data" / "eval.json"
 MAX_SEQ_LENGTH = 8192
 
-LORA_R = 64
-LORA_ALPHA = 64
+MODEL_NAME = "unsloth/Qwen3.5-35B-A3B"
+TAG = "1000art_qwen35_35b"
+
+LORA_R = 16
+LORA_ALPHA = 16
 LORA_TARGET_MODULES = [
     "q_proj", "k_proj", "v_proj", "o_proj",
     "gate_proj", "up_proj", "down_proj",
@@ -67,23 +73,24 @@ def subsample_data(full_data: list[dict], num_articles: int, seed: int = 42) -> 
     return rng.sample(full_data, num_articles)
 
 
-def train_model(model_name: str, train_data: list[dict], output_dir: Path,
-                checkpoint_dir: Path, log_file: Path):
-    """Train a LoRA adapter on the given data."""
-    from unsloth import FastLanguageModel
+def train_model(train_data: list[dict], output_dir: Path, checkpoint_dir: Path):
+    """Train a bf16 LoRA adapter on the given data."""
+    from unsloth import FastModel
     from unsloth.chat_templates import train_on_responses_only
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
 
-    print(f"Training {model_name} on {len(train_data)} examples, saving to {output_dir}")
+    print(f"Training {MODEL_NAME} on {len(train_data)} examples, saving to {output_dir}")
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
+    model, tokenizer = FastModel.from_pretrained(
+        model_name=MODEL_NAME,
         max_seq_length=MAX_SEQ_LENGTH,
-        load_in_4bit=True,
+        load_in_4bit=False,
+        load_in_16bit=True,
+        full_finetuning=False,
     )
 
-    model = FastLanguageModel.get_peft_model(
+    model = FastModel.get_peft_model(
         model,
         r=LORA_R,
         target_modules=LORA_TARGET_MODULES,
@@ -92,7 +99,9 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         bias="none",
         use_gradient_checkpointing="unsloth",
         random_state=42,
+        max_seq_length=MAX_SEQ_LENGTH,
     )
+    model.print_trainable_parameters()
 
     def formatting_func(examples):
         texts = []
@@ -138,25 +147,10 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         processing_class=tokenizer,
     )
 
-    # Detect chat template format for train_on_responses_only
-    sample_text = tokenizer.apply_chat_template(
-        [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}],
-        tokenize=False, add_generation_prompt=False,
-    )
-    if "<|im_start|>" in sample_text:
-        inst_part = "<|im_start|>user\n"
-        resp_part = "<|im_start|>assistant\n"
-    elif "<|start_header_id|>" in sample_text:
-        inst_part = "<|start_header_id|>user<|end_header_id|>\n\n"
-        resp_part = "<|start_header_id|>assistant<|end_header_id|>\n\n"
-    else:
-        raise ValueError(f"Unknown chat template format. Sample: {sample_text[:200]}")
-    print(f"Chat template detected: instruction_part={inst_part!r}, response_part={resp_part!r}")
-
     trainer = train_on_responses_only(
         trainer,
-        instruction_part=inst_part,
-        response_part=resp_part,
+        instruction_part="<|im_start|>user\n",
+        response_part="<|im_start|>assistant\n",
     )
 
     print(f"Total optimizer steps: ~{total_steps}")
@@ -172,12 +166,17 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
     tokenizer.save_pretrained(adapter_path)
 
     stats = {
-        "model_name": model_name,
+        "model_name": MODEL_NAME,
         "train_loss": train_result.training_loss,
         "train_runtime_seconds": elapsed,
         "train_samples": len(train_data),
         "epochs": EPOCHS,
         "total_steps": total_steps,
+        "lora_r": LORA_R,
+        "lora_alpha": LORA_ALPHA,
+        "max_seq_length": MAX_SEQ_LENGTH,
+        "load_in_16bit": True,
+        "load_in_4bit": False,
     }
     with open(output_dir / "training_stats.json", "w") as f:
         json.dump(stats, f, indent=2)
@@ -190,21 +189,21 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
     return stats
 
 
-def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
-                   num_samples: int = 50) -> dict:
-    """Evaluate a fine-tuned model."""
-    from unsloth import FastLanguageModel
+def evaluate_model(eval_data: list[dict], adapter_path: str, num_samples: int = 50) -> dict:
+    """Evaluate the fine-tuned model."""
+    from unsloth import FastModel
     from peft import PeftModel
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
+    model, tokenizer = FastModel.from_pretrained(
+        model_name=MODEL_NAME,
         max_seq_length=MAX_SEQ_LENGTH,
-        load_in_4bit=True,
+        load_in_4bit=False,
+        load_in_16bit=True,
+        full_finetuning=False,
     )
     model = PeftModel.from_pretrained(model, adapter_path)
-    FastLanguageModel.for_inference(model)
+    FastModel.for_inference(model)
 
-    # For VLM models, tokenizer is a processor — get the underlying text tokenizer
     text_tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
 
     samples = eval_data[:num_samples]
@@ -235,6 +234,7 @@ def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
 
         text = tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=False,
+            enable_thinking=False,
         )
         input_ids = text_tokenizer.encode(text, return_tensors="pt").to(model.device)
         attention_mask = torch.ones_like(input_ids)
@@ -302,94 +302,85 @@ def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
             "avg_time_per_sample": sum(s["time_seconds"] for s in metrics["per_sample"]) / n,
         }
 
+    # Compute P/R/F1
+    golden_total = metrics["total_golden_rels"]
+    predicted_total = metrics["total_predicted_rels"]
+    comparison = {}
+    for label, key in [("name", "name_matches"), ("tuple", "exact_matches")]:
+        tp = metrics[key]
+        fp = predicted_total - tp
+        fn = golden_total - tp
+        precision = tp / predicted_total if predicted_total else 0
+        recall = tp / golden_total if golden_total else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
+        comparison[label] = {"tp": tp, "fp": fp, "fn": fn, "precision": precision, "recall": recall, "f1": f1}
+        print(f"  {label.title()}: P={precision:.1%}  R={recall:.1%}  F1={f1:.1%}  TP={tp}  FP={fp}  FN={fn}")
+
+    metrics["comparison"] = comparison
+
     # Strip per-sample details for file size
     summary_metrics = {k: v for k, v in metrics.items() if k != "per_sample"}
     summary_metrics["per_sample_count"] = n
+
+    del model, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+
     return summary_metrics
 
 
-def compute_comparison(eval_results: dict) -> dict:
-    """Compute P/R/F1/FP from eval result counts."""
-    golden = eval_results["total_golden_rels"]
-    predicted = eval_results["total_predicted_rels"]
-    out = {}
-    for label, key in [("name", "name_matches"), ("tuple", "exact_matches")]:
-        tp = eval_results[key]
-        fp = predicted - tp
-        fn = golden - tp
-        precision = tp / predicted if predicted else 0
-        recall = tp / golden if golden else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
-        out[label] = {"tp": tp, "fp": fp, "fn": fn, "precision": precision, "recall": recall, "f1": f1}
-    out["total_golden"] = golden
-    out["total_predicted"] = predicted
-    out["format_compliance"] = eval_results["summary"]["format_compliance"]
-    return out
-
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True, help="HuggingFace model name")
-    parser.add_argument("--tag", type=str, required=True, help="Short tag for output dirs (e.g. qwen35_9b)")
-    parser.add_argument("--num-eval", type=int, default=50, help="Number of eval samples")
-    args = parser.parse_args()
-
-    tag = f"1000art_{args.tag}"
-
     print(f"\n{'='*72}")
-    print(f"  MODEL COMPARISON RUN: {args.model}")
-    print(f"  Tag: {tag}, Articles: {NUM_ARTICLES}")
+    print(f"  QWEN3.5-35B-A3B (MoE) TRAINING RUN")
+    print(f"  Model: {MODEL_NAME}")
+    print(f"  Tag: {TAG}, Articles: {NUM_ARTICLES}")
+    print(f"  Mode: bf16 LoRA (NOT QLoRA) on A100")
     print(f"  Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*72}\n")
 
-    # Paths
-    output_dir = BASE_DIR / "output" / tag
-    checkpoint_dir = BASE_DIR / "checkpoints" / tag
-    eval_output = BASE_DIR / "data" / f"eval_results_{tag}.json"
-    log_file = BASE_DIR / f"training_{tag}.log"
+    output_dir = BASE_DIR / "output" / TAG
+    checkpoint_dir = BASE_DIR / "checkpoints" / TAG
+    eval_output = BASE_DIR / "data" / f"eval_results_{TAG}.json"
 
     # Load data
     full_train = json.loads(FULL_TRAIN_PATH.read_text())
     eval_data = json.loads(EVAL_PATH.read_text())
 
-    # Subsample (same seed=42, same 1000 articles as ablation)
+    # Subsample (same seed=42, same 1000 articles as other model comparisons)
     train_subset = subsample_data(full_train, NUM_ARTICLES)
     print(f"Subsampled {len(train_subset)} training examples from {len(full_train)}")
 
     # Save subsample for reproducibility
-    subset_path = BASE_DIR / "data" / f"train_{tag}.json"
+    subset_path = BASE_DIR / "data" / f"train_{TAG}.json"
     subset_path.write_text(json.dumps(train_subset))
     print(f"Saved training subset to {subset_path}")
 
     # Train
     print(f"\n--- Training [{time.strftime('%H:%M:%S')}] ---")
-    train_stats = train_model(args.model, train_subset, output_dir, checkpoint_dir, log_file)
-    print(f"Training done [{time.strftime('%H:%M:%S')}]: loss={train_stats['train_loss']:.4f}, "
-          f"time={train_stats['train_runtime_seconds']/60:.1f}min")
+    train_stats = train_model(train_subset, output_dir, checkpoint_dir)
+    print(f"\nTraining stats: {json.dumps(train_stats, indent=2)}")
 
     # Evaluate
-    adapter_path = str(output_dir / "lora_adapter")
     print(f"\n--- Evaluation [{time.strftime('%H:%M:%S')}] ---")
-    eval_results = evaluate_model(args.model, adapter_path, eval_data, args.num_eval)
+    adapter_path = str(output_dir / "lora_adapter")
+    eval_results = evaluate_model(eval_data, adapter_path, num_samples=50)
+
+    # Save eval results
     eval_output.write_text(json.dumps(eval_results, indent=2))
-    print(f"Eval done [{time.strftime('%H:%M:%S')}]")
+    print(f"\nEval results saved to {eval_output}")
 
-    # Free GPU memory
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    # Compare
-    comp = compute_comparison(eval_results)
     print(f"\n{'='*72}")
-    print(f"  RESULTS: {args.model} — {NUM_ARTICLES} articles ({len(train_subset)} training examples)")
-    print(f"{'='*72}")
-    print(f"  Format compliance: {comp['format_compliance']:.1%}")
-    print(f"  Name:  P={comp['name']['precision']:.1%}  R={comp['name']['recall']:.1%}  F1={comp['name']['f1']:.1%}  TP={comp['name']['tp']}  FP={comp['name']['fp']}  FN={comp['name']['fn']}")
-    print(f"  Tuple: P={comp['tuple']['precision']:.1%}  R={comp['tuple']['recall']:.1%}  F1={comp['tuple']['f1']:.1%}  TP={comp['tuple']['tp']}  FP={comp['tuple']['fp']}  FN={comp['tuple']['fn']}")
+    print(f"  DONE: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Train loss: {train_stats['train_loss']:.4f}")
     print(f"  Train time: {train_stats['train_runtime_seconds']/60:.1f} min")
-    print(f"  Completed: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*72}\n")
+    if "summary" in eval_results:
+        print(f"  Format compliance: {eval_results['summary']['format_compliance']:.1%}")
+    if "comparison" in eval_results:
+        name_f1 = eval_results["comparison"]["name"]["f1"]
+        tuple_f1 = eval_results["comparison"]["tuple"]["f1"]
+        print(f"  Name F1: {name_f1:.1%}")
+        print(f"  Tuple F1: {tuple_f1:.1%}")
+    print(f"{'='*72}")
 
 
 if __name__ == "__main__":

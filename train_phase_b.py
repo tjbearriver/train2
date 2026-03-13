@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Train and evaluate a specific model on 1000 articles for cross-model comparison.
+"""Phase B: LR sweep for Qwen3.5-9B on 1000 articles using bf16 LoRA.
+
+Sweeps learning rate while keeping all other hyperparameters identical to baseline.
+Uses the same 1000-article subsample (seed=42) as the baseline run.
 
 Usage:
-  python train_model_compare.py --model unsloth/Qwen3.5-9B --tag qwen35_9b
-  python train_model_compare.py --model unsloth/Qwen3.5-4B --tag qwen35_4b
+  mkdir -p output/phase_b_lr1e4 && python -u train_phase_b.py --lr 1e-4 --tag phase_b_lr1e4 2>&1 | tee output/phase_b_lr1e4/train.log
+  mkdir -p output/phase_b_lr5e5 && python -u train_phase_b.py --lr 5e-5 --tag phase_b_lr5e5 2>&1 | tee output/phase_b_lr5e5/train.log
 """
 
 import argparse
@@ -21,6 +24,8 @@ FULL_TRAIN_PATH = BASE_DIR / "data" / "train.json"
 EVAL_PATH = BASE_DIR / "data" / "eval.json"
 MAX_SEQ_LENGTH = 8192
 
+MODEL_NAME = "unsloth/Qwen3.5-9B"
+
 LORA_R = 64
 LORA_ALPHA = 64
 LORA_TARGET_MODULES = [
@@ -31,14 +36,20 @@ LORA_TARGET_MODULES = [
 EPOCHS = 3
 BATCH_SIZE = 1
 GRAD_ACCUM = 16
-LEARNING_RATE = 2e-4
-WARMUP_STEPS = 20
+WARMUP_RATIO = 0.05  # 5% of total steps — proportional warmup
 LR_SCHEDULER = "cosine"
 OPTIMIZER = "adamw_8bit"
 LOGGING_STEPS = 5
 NUM_ARTICLES = 1000
 
 REL_PATTERN = re.compile(r"^([A-Z\-]+)\(([^/]+)/([^)]+)\)$")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Phase B: LR sweep training")
+    parser.add_argument("--lr", type=float, required=True, help="Learning rate (e.g. 1e-4, 5e-5)")
+    parser.add_argument("--tag", type=str, required=True, help="Run tag for output dir (e.g. phase_b_lr1e4)")
+    return parser.parse_args()
 
 
 def parse_csv_output(text: str) -> list[dict]:
@@ -60,27 +71,30 @@ def parse_csv_output(text: str) -> list[dict]:
 
 
 def subsample_data(full_data: list[dict], num_articles: int, seed: int = 42) -> list[dict]:
-    """Subsample training data to a fixed number of articles."""
+    """Subsample training data to a fixed number of articles (same seed as baseline)."""
     rng = random.Random(seed)
     if num_articles >= len(full_data):
         return full_data
     return rng.sample(full_data, num_articles)
 
 
-def train_model(model_name: str, train_data: list[dict], output_dir: Path,
-                checkpoint_dir: Path, log_file: Path):
-    """Train a LoRA adapter on the given data."""
+def train_model(train_data: list[dict], output_dir: Path, checkpoint_dir: Path, learning_rate: float, tag: str):
+    """Train a LoRA adapter on the given data using bf16 LoRA (not QLoRA)."""
     from unsloth import FastLanguageModel
     from unsloth.chat_templates import train_on_responses_only
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
 
-    print(f"Training {model_name} on {len(train_data)} examples, saving to {output_dir}")
+    print(f"Training {MODEL_NAME} on {len(train_data)} examples (bf16 LoRA)")
+    print(f"Learning rate: {learning_rate}")
+    print(f"Output: {output_dir}")
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
+        model_name=MODEL_NAME,
         max_seq_length=MAX_SEQ_LENGTH,
-        load_in_4bit=True,
+        load_in_4bit=False,
+        load_in_16bit=True,
+        full_finetuning=False,
     )
 
     model = FastLanguageModel.get_peft_model(
@@ -93,6 +107,7 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         use_gradient_checkpointing="unsloth",
         random_state=42,
     )
+    model.print_trainable_parameters()
 
     def formatting_func(examples):
         texts = []
@@ -115,8 +130,8 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         num_train_epochs=EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUM,
-        learning_rate=LEARNING_RATE,
-        warmup_steps=min(WARMUP_STEPS, total_steps // 5),
+        learning_rate=learning_rate,
+        warmup_ratio=WARMUP_RATIO,
         lr_scheduler_type=LR_SCHEDULER,
         optim=OPTIMIZER,
         bf16=True,
@@ -151,7 +166,7 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
         resp_part = "<|start_header_id|>assistant<|end_header_id|>\n\n"
     else:
         raise ValueError(f"Unknown chat template format. Sample: {sample_text[:200]}")
-    print(f"Chat template detected: instruction_part={inst_part!r}, response_part={resp_part!r}")
+    print(f"Chat template: instruction_part={inst_part!r}, response_part={resp_part!r}")
 
     trainer = train_on_responses_only(
         trainer,
@@ -160,6 +175,8 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
     )
 
     print(f"Total optimizer steps: ~{total_steps}")
+    print(f"Warmup steps: ~{int(total_steps * WARMUP_RATIO)}")
+    print(f"Save every {save_steps} steps")
     t0 = time.time()
     train_result = trainer.train()
     elapsed = time.time() - t0
@@ -172,12 +189,19 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
     tokenizer.save_pretrained(adapter_path)
 
     stats = {
-        "model_name": model_name,
+        "model_name": MODEL_NAME,
+        "tag": tag,
         "train_loss": train_result.training_loss,
         "train_runtime_seconds": elapsed,
         "train_samples": len(train_data),
         "epochs": EPOCHS,
         "total_steps": total_steps,
+        "lora_r": LORA_R,
+        "lora_alpha": LORA_ALPHA,
+        "learning_rate": learning_rate,
+        "warmup_ratio": WARMUP_RATIO,
+        "quantization": "bf16 LoRA (not QLoRA)",
+        "max_seq_length": MAX_SEQ_LENGTH,
     }
     with open(output_dir / "training_stats.json", "w") as f:
         json.dump(stats, f, indent=2)
@@ -190,21 +214,21 @@ def train_model(model_name: str, train_data: list[dict], output_dir: Path,
     return stats
 
 
-def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
-                   num_samples: int = 50) -> dict:
-    """Evaluate a fine-tuned model."""
+def evaluate_model(adapter_path: str, eval_data: list[dict], num_samples: int = 50) -> dict:
+    """Evaluate the fine-tuned model using bf16 (matching training precision)."""
     from unsloth import FastLanguageModel
     from peft import PeftModel
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
+        model_name=MODEL_NAME,
         max_seq_length=MAX_SEQ_LENGTH,
-        load_in_4bit=True,
+        load_in_4bit=False,
+        load_in_16bit=True,
+        full_finetuning=False,
     )
     model = PeftModel.from_pretrained(model, adapter_path)
     FastLanguageModel.for_inference(model)
 
-    # For VLM models, tokenizer is a processor — get the underlying text tokenizer
     text_tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
 
     samples = eval_data[:num_samples]
@@ -302,7 +326,6 @@ def evaluate_model(model_name: str, adapter_path: str, eval_data: list[dict],
             "avg_time_per_sample": sum(s["time_seconds"] for s in metrics["per_sample"]) / n,
         }
 
-    # Strip per-sample details for file size
     summary_metrics = {k: v for k, v in metrics.items() if k != "per_sample"}
     summary_metrics["per_sample_count"] = n
     return summary_metrics
@@ -328,67 +351,59 @@ def compute_comparison(eval_results: dict) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True, help="HuggingFace model name")
-    parser.add_argument("--tag", type=str, required=True, help="Short tag for output dirs (e.g. qwen35_9b)")
-    parser.add_argument("--num-eval", type=int, default=50, help="Number of eval samples")
-    args = parser.parse_args()
-
-    tag = f"1000art_{args.tag}"
+    args = parse_args()
+    lr = args.lr
+    tag = args.tag
 
     print(f"\n{'='*72}")
-    print(f"  MODEL COMPARISON RUN: {args.model}")
-    print(f"  Tag: {tag}, Articles: {NUM_ARTICLES}")
+    print(f"  PHASE B: LR SWEEP — Qwen3.5-9B (bf16 LoRA, {NUM_ARTICLES} articles)")
+    print(f"  Model: {MODEL_NAME}")
+    print(f"  Learning Rate: {lr}")
+    print(f"  Tag: {tag}")
     print(f"  Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*72}\n")
 
-    # Paths
     output_dir = BASE_DIR / "output" / tag
     checkpoint_dir = BASE_DIR / "checkpoints" / tag
     eval_output = BASE_DIR / "data" / f"eval_results_{tag}.json"
-    log_file = BASE_DIR / f"training_{tag}.log"
 
-    # Load data
-    full_train = json.loads(FULL_TRAIN_PATH.read_text())
+    # Load and subsample training data (same seed=42 as baseline)
+    full_data = json.loads(FULL_TRAIN_PATH.read_text())
+    train_data = subsample_data(full_data, NUM_ARTICLES)
     eval_data = json.loads(EVAL_PATH.read_text())
-
-    # Subsample (same seed=42, same 1000 articles as ablation)
-    train_subset = subsample_data(full_train, NUM_ARTICLES)
-    print(f"Subsampled {len(train_subset)} training examples from {len(full_train)}")
-
-    # Save subsample for reproducibility
-    subset_path = BASE_DIR / "data" / f"train_{tag}.json"
-    subset_path.write_text(json.dumps(train_subset))
-    print(f"Saved training subset to {subset_path}")
+    print(f"Subsampled {len(train_data)} of {len(full_data)} articles (seed=42)")
+    print(f"Eval set: {len(eval_data)} examples")
 
     # Train
     print(f"\n--- Training [{time.strftime('%H:%M:%S')}] ---")
-    train_stats = train_model(args.model, train_subset, output_dir, checkpoint_dir, log_file)
+    train_stats = train_model(train_data, output_dir, checkpoint_dir, lr, tag)
     print(f"Training done [{time.strftime('%H:%M:%S')}]: loss={train_stats['train_loss']:.4f}, "
-          f"time={train_stats['train_runtime_seconds']/60:.1f}min")
+          f"time={train_stats['train_runtime_seconds']/3600:.1f}hr")
 
     # Evaluate
     adapter_path = str(output_dir / "lora_adapter")
     print(f"\n--- Evaluation [{time.strftime('%H:%M:%S')}] ---")
-    eval_results = evaluate_model(args.model, adapter_path, eval_data, args.num_eval)
+    eval_results = evaluate_model(adapter_path, eval_data, 50)
     eval_output.write_text(json.dumps(eval_results, indent=2))
     print(f"Eval done [{time.strftime('%H:%M:%S')}]")
 
-    # Free GPU memory
     gc.collect()
     torch.cuda.empty_cache()
 
-    # Compare
+    # Results
     comp = compute_comparison(eval_results)
     print(f"\n{'='*72}")
-    print(f"  RESULTS: {args.model} — {NUM_ARTICLES} articles ({len(train_subset)} training examples)")
+    print(f"  PHASE B RESULTS: LR={lr} — {len(train_data)} articles")
     print(f"{'='*72}")
     print(f"  Format compliance: {comp['format_compliance']:.1%}")
     print(f"  Name:  P={comp['name']['precision']:.1%}  R={comp['name']['recall']:.1%}  F1={comp['name']['f1']:.1%}  TP={comp['name']['tp']}  FP={comp['name']['fp']}  FN={comp['name']['fn']}")
     print(f"  Tuple: P={comp['tuple']['precision']:.1%}  R={comp['tuple']['recall']:.1%}  F1={comp['tuple']['f1']:.1%}  TP={comp['tuple']['tp']}  FP={comp['tuple']['fp']}  FN={comp['tuple']['fn']}")
     print(f"  Train loss: {train_stats['train_loss']:.4f}")
-    print(f"  Train time: {train_stats['train_runtime_seconds']/60:.1f} min")
+    print(f"  Train time: {train_stats['train_runtime_seconds']/3600:.1f} hr")
     print(f"  Completed: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    tuple_f1 = comp['tuple']['f1']
+    print(f"\n  >>> Tuple F1 = {tuple_f1:.1%} (LR={lr}) <<<")
     print(f"{'='*72}\n")
 
 
