@@ -241,11 +241,12 @@ Training the same 1000-article subset across different model architectures to co
 
 ### Cross-Model Results (1000 articles, same eval set)
 
-All models trained on the same 1000-article subset (subsampled from the 4,726-article training pool, seed=42). Evaluated on the same 50-sample eval set (from 526-article eval pool). The full Qwen3-8B run used all 4,726 training articles — all other runs below used 1,000.
+All models trained on the same 1000-article subset (subsampled from the 4,726-article training pool, seed=42). Evaluated on the same 50-sample eval set (from 526-article eval pool). Full-dataset rows (Qwen3-8B 4726-art, Qwen3.5-9B 4726-art) used all available training articles; all other runs used 1,000.
 
 | Model | Train Loss | Train Time | Name F1 | Tuple F1 | Inference tok/s | VRAM | Notes |
 |-------|-----------|------------|---------|----------|----------------|------|-------|
 | Qwen3-8B (4726 art) | 0.081 | 13.8 hr | 89.4% | 77.9% | 15.9 | ~15.4 GB | Full dataset, same model |
+| Qwen3.5-9B (4726 art) | 0.052 | 1742.7 min (29.0 hr) | 90.6% | **77.3%** | TBD | ~32 GB | VLM, bf16 LoRA r=64 (not QLoRA), full dataset, RTX 5090 — Phase A |
 | Qwen3.5-35B-A3B (1000 art) | 0.076 | 480.1 min (8.00 hr) | 89.0% | 76.1% | — | ~75 GB | MoE (36B/3B active), bf16 LoRA r=16 on A100-80GB, ~152s/step |
 | Qwen3.5-27B (1000 art) | 0.050 | 735.6 min (12.26 hr) | 87.6% | 73.8% | — | ~96 GB | VLM, bf16 LoRA on H100 NVL, ~234s/step |
 | Qwen3.5-9B (1000 art) | 0.063 | 322.4 min (5.37 hr) | 86.4% | 73.4% | TBD | ~32 GB | VLM, bf16 LoRA (not QLoRA), ~103s/step, trained on RTX 5090 |
@@ -316,6 +317,7 @@ With `enable_thinking=False`, the prompt pre-closes the think block (`<think>\n\
 - Llama-3.2-3B (1000-art): `output/1000art_llama32_3b/lora_adapter/`
 - Qwen3.5-4B Abliterated (1000-art): `output/1000art_qwen35_4b_abliterated/lora_adapter/`
 - Qwen3.5-9B (1000-art): `output/1000art_qwen35_9b/lora_adapter/`
+- Qwen3.5-9B (4726-art): `output/phase_a/phase_a/lora_adapter/` (bf16 LoRA r=64, Phase A)
 
 ### Running Models
 To load a fine-tuned adapter for inference:
