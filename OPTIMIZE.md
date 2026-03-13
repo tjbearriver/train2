@@ -157,30 +157,38 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 
 ## Recommended Execution Plan
 
-### Phase A: Full Data Run (Highest Priority)
+### Phase A: Full Data Run (COMPLETE 2026-03-13)
 
 **What**: Train Qwen3.5-9B on all 4,726 articles with current hyperparameters (bf16 LoRA r=64, lr=2e-4, 3 epochs).
 
 **Hardware**: 1× RTX 5090 (32GB) on runpod.
 
-**Timing**:
-- Upload data: ~5 min
-- Model download (cached after first run): ~5 min
-- Training: ~25 hours (886 steps × ~103s/step)
-- Evaluation (50 samples): ~1 hour
-- **Total wall clock: ~27 hours**
-
-**Cost**: ~$20 at <$0.80/hr (runpod).
-
 **Script**: `train_phase_a.py` — standalone script for Phase A, outputs to `output/phase_a/`.
 
 **Output directory**: `output/phase_a/` (separate from baseline `output/1000art_qwen35_9b/`).
 
-**Eval note**: Eval uses bf16 (matching training), not 4-bit like `eval_adapter.py` does.
+**Results**:
 
-**Log file**: `output/phase_a/train.log` — all stdout/stderr captured via `tee`.
+| Metric | Value |
+|--------|-------|
+| Train Loss | 0.0517 |
+| Train Time | 29.0 hr (886 steps × ~118s/step) |
+| Format Compliance | 100.0% |
+| Name P / R / F1 | 87.9% / 93.5% / **90.6%** |
+| Tuple P / R / F1 | 75.0% / 79.8% / **77.3%** |
+| TP / FP / FN | 612 / 204 / 155 |
+| Config | r=64, alpha=64, lr=2e-4, 3 epochs, bf16 LoRA |
+| Cost | ~$26 (29hr × $0.89/hr) |
 
-**Warmup**: 5% of total steps (~44 steps) instead of fixed 20. Proportional warmup scales better with the larger dataset.
+**Key findings**:
+1. **Tuple F1 = 77.3%** — falls in the 74–78% decision bracket → Run Phase B + C sweeps.
+2. Full data (4726 vs 1000 articles) improved Tuple F1 from 73.4% → 77.3% (+3.9pp), exactly matching the expected scaling trend.
+3. Name F1 jumped from 86.4% → 90.6% (+4.2pp) — more data significantly improves name extraction.
+4. Format compliance remains perfect at 100%.
+5. Loss curve: 0.175 → 0.07 (epoch 1) → 0.045 (epoch 2) → 0.027 (epoch 3), final avg 0.0517.
+6. **Note**: This run used r=64 (original config). Phase C showed r=16 is better on 1000 articles — Phase C2 tests r=8 and r=16 on full data.
+
+**Pod**: `8emcl5xu2fx74b` — terminated after results downloaded.
 
 ### Phase B: LR Sweep (COMPLETE 2026-03-12)
 
@@ -279,6 +287,7 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 
 **Hardware**: 1× H100-80GB on runpod (~$3.50/hr).
 
+
 **Timing**:
 - Training: ~50–70 hours (more data × longer sequences × slower per step)
 - **Total: ~3 days**
@@ -310,7 +319,7 @@ All experiments use the same 50-sample eval set and report Tuple F1, Name F1, tr
 | C1 | C | Rank | 16 | 1000 | 8192 | 2e-4 | 16 | 3 | 6.0 hr | 5090 | **75.1%** ✅ |
 | C2 | C | Rank | 32 | 1000 | 8192 | 2e-4 | 32 | 3 | 8.8 hr | 5090 | 73.2% |
 | C3 | C | Rank | 128 | 1000 | 8192 | 2e-4 | 128 | 3 | 6.2 hr | 5090 | 74.3% |
-| A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 16* | 3 | ~25 hr | 5090 | — |
+| A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 64 | 3 | 29.0 hr | 5090 | **77.3%** |
 | C2a | C2 | Rank (full) | 8 | 4726 | 8192 | 2e-4 | 8 | 3 | ~25 hr | 5090 | — |
 | C2b | C2 | Rank (full) | 16 | 4726 | 8192 | 2e-4 | 16 | 3 | ~25 hr | 5090 | — |
 | B1 | B | LR | 1e-4 | 1000 | 8192 | 1e-4 | 64 | 3 | 10.4 hr | 5090 | 73.0% |
@@ -325,10 +334,13 @@ Phase B complete — **lr=2e-4 (baseline) is optimal** (73.4% Tuple F1). Lower L
 
 Phase C complete — **r=16 is optimal** (75.1% Tuple F1, +1.7pp over baseline r=64).
 
+Phase A complete — **77.3% Tuple F1** with r=64 on full 4726 articles (+3.9pp over 1000-article baseline).
+
 ```
 Next steps:
-  ├─ Phase A: Full 4726 articles with r=16, lr=2e-4 (expected 78-82% based on scaling)
-  └─ Phase D: 16384 context (only if Phase A < 82%)
+  ├─ Phase C2: Full 4726 articles with r=8 and r=16 (test if smaller rank generalizes better on full data)
+  │   Expected: r=16 on full data could push to 79-82% (combining Phase C's +1.7pp with Phase A's +3.9pp)
+  └─ Phase D: 16384 context (only if Phase C2 < 82%)
 ```
 
 ---
