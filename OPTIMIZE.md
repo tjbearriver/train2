@@ -157,32 +157,39 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 
 ## Recommended Execution Plan
 
-### Phase A: Full Data Run (Superseded by Phase C2b)
+### Phase A: Full Data Run (COMPLETE 2026-03-13)
 
-**What**: Original plan was to train Qwen3.5-9B on all 4,726 articles with the best available hyperparameters. After Phase C and Phase C2, that full-data recommendation is now bf16 LoRA r=16, lr=2e-4, 3 epochs.
+**What**: Train Qwen3.5-9B on all 4,726 articles with current hyperparameters (bf16 LoRA r=64, lr=2e-4, 3 epochs).
 
 **Hardware**: 1× RTX 5090 (32GB) on runpod.
-
-**Timing**:
-- Upload data: ~5 min
-- Model download (cached after first run): ~5 min
-- Training: ~25 hours (886 steps × ~103s/step)
-- Evaluation (50 samples): ~1 hour
-- **Total wall clock: ~27 hours**
-
-**Cost**: ~$20 at <$0.80/hr (runpod).
 
 **Script**: `train_phase_a.py` — standalone script for Phase A, outputs to `output/phase_a/`.
 
 **Output directory**: `output/phase_a/` (separate from baseline `output/1000art_qwen35_9b/`).
 
-**Eval note**: Eval uses bf16 (matching training), not 4-bit like `eval_adapter.py` does.
+**Results**:
 
-**Log file**: `output/phase_a/train.log` — all stdout/stderr captured via `tee`.
+| Metric | Value |
+|--------|-------|
+| Train Loss | 0.0517 |
+| Train Time | 29.0 hr (886 steps × ~118s/step) |
+| Format Compliance | 100.0% |
+| Name P / R / F1 | 87.9% / 93.5% / **90.6%** |
+| Tuple P / R / F1 | 75.0% / 79.8% / **77.3%** |
+| TP / FP / FN | 612 / 204 / 155 |
+| Config | r=64, alpha=64, lr=2e-4, 3 epochs, bf16 LoRA |
+| Cost | ~$26 (29hr × $0.89/hr) |
 
-**Warmup**: 5% of total steps (~44 steps) instead of fixed 20. Proportional warmup scales better with the larger dataset.
+**Key findings**:
+1. **Tuple F1 = 77.3%** — falls in the 74–78% decision bracket → Run Phase B + C sweeps.
+2. Full data (4726 vs 1000 articles) improved Tuple F1 from 73.4% → 77.3% (+3.9pp), exactly matching the expected scaling trend.
+3. Name F1 jumped from 86.4% → 90.6% (+4.2pp) — more data significantly improves name extraction.
+4. Format compliance remains perfect at 100%.
+5. Loss curve: 0.175 → 0.07 (epoch 1) → 0.045 (epoch 2) → 0.027 (epoch 3), final avg 0.0517.
+6. **Note**: This run used r=64 (original config). Phase C showed r=16 is better on 1000 articles — Phase C2 tests r=8 and r=16 on full data.
 
-**Status**: Effectively completed by Phase C2b, which ran the recommended full-data r=16 configuration and produced the final full-data checkpoint.
+**Pod**: `8emcl5xu2fx74b` — terminated after results downloaded.
+
 
 ### Phase B: LR Sweep (COMPLETE 2026-03-12)
 
