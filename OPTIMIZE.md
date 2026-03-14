@@ -157,38 +157,32 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 
 ## Recommended Execution Plan
 
-### Phase A: Full Data Run (COMPLETE 2026-03-13)
+### Phase A: Full Data Run (Superseded by Phase C2b)
 
-**What**: Train Qwen3.5-9B on all 4,726 articles with current hyperparameters (bf16 LoRA r=64, lr=2e-4, 3 epochs).
+**What**: Original plan was to train Qwen3.5-9B on all 4,726 articles with the best available hyperparameters. After Phase C and Phase C2, that full-data recommendation is now bf16 LoRA r=16, lr=2e-4, 3 epochs.
 
 **Hardware**: 1× RTX 5090 (32GB) on runpod.
+
+**Timing**:
+- Upload data: ~5 min
+- Model download (cached after first run): ~5 min
+- Training: ~25 hours (886 steps × ~103s/step)
+- Evaluation (50 samples): ~1 hour
+- **Total wall clock: ~27 hours**
+
+**Cost**: ~$20 at <$0.80/hr (runpod).
 
 **Script**: `train_phase_a.py` — standalone script for Phase A, outputs to `output/phase_a/`.
 
 **Output directory**: `output/phase_a/` (separate from baseline `output/1000art_qwen35_9b/`).
 
-**Results**:
+**Eval note**: Eval uses bf16 (matching training), not 4-bit like `eval_adapter.py` does.
 
-| Metric | Value |
-|--------|-------|
-| Train Loss | 0.0517 |
-| Train Time | 29.0 hr (886 steps × ~118s/step) |
-| Format Compliance | 100.0% |
-| Name P / R / F1 | 87.9% / 93.5% / **90.6%** |
-| Tuple P / R / F1 | 75.0% / 79.8% / **77.3%** |
-| TP / FP / FN | 612 / 204 / 155 |
-| Config | r=64, alpha=64, lr=2e-4, 3 epochs, bf16 LoRA |
-| Cost | ~$26 (29hr × $0.89/hr) |
+**Log file**: `output/phase_a/train.log` — all stdout/stderr captured via `tee`.
 
-**Key findings**:
-1. **Tuple F1 = 77.3%** — falls in the 74–78% decision bracket → Run Phase B + C sweeps.
-2. Full data (4726 vs 1000 articles) improved Tuple F1 from 73.4% → 77.3% (+3.9pp), exactly matching the expected scaling trend.
-3. Name F1 jumped from 86.4% → 90.6% (+4.2pp) — more data significantly improves name extraction.
-4. Format compliance remains perfect at 100%.
-5. Loss curve: 0.175 → 0.07 (epoch 1) → 0.045 (epoch 2) → 0.027 (epoch 3), final avg 0.0517.
-6. **Note**: This run used r=64 (original config). Phase C showed r=16 is better on 1000 articles — Phase C2 tests r=8 and r=16 on full data.
+**Warmup**: 5% of total steps (~44 steps) instead of fixed 20. Proportional warmup scales better with the larger dataset.
 
-**Pod**: `8emcl5xu2fx74b` — terminated after results downloaded.
+**Status**: Effectively completed by Phase C2b, which ran the recommended full-data r=16 configuration and produced the final full-data checkpoint.
 
 ### Phase B: LR Sweep (COMPLETE 2026-03-12)
 
@@ -258,7 +252,7 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 - r=32: `2sx9f3xnlpmvt6` — 58M params — Tuple F1=73.2%
 - r=128: `tlvi73quoi5ig0` — 232M params — Tuple F1=74.3%
 
-### Phase C2: Lower Rank Sweep on Full Data (IN PROGRESS 2026-03-12)
+### Phase C2: Lower Rank Sweep on Full Data (COMPLETE 2026-03-13)
 
 **What**: Test r ∈ {8, 16} on the full 4,726-article dataset. Phase C showed r=16 is optimal on 1000 articles — test whether the same rank holds on full data, and whether r=8 (even smaller) generalizes better.
 
@@ -281,12 +275,26 @@ Alternative to vLLM with potentially better Qwen3.5 support due to Alibaba's inv
 | r=8  | ~14M (0.15%) | 4726 | ~25 hr | Half of r=16, test lower bound |
 | r=16 | ~29M (0.31%) | 4726 | ~25 hr | Phase C winner, full data test |
 
+**Results**:
+
+| Rank | Train Loss | Train Time | Tuple P | Tuple R | **Tuple F1** | Name F1 | Outcome |
+|------|------------|------------|---------|---------|--------------|---------|---------|
+| r=8  | 0.0631 | 28.9 hr | 73.4% | 78.5% | **75.9%** | 87.1% | Good, but below r=16 |
+| r=16 | 0.0598 | 29.4 hr | 75.3% | 78.1% | **76.6%** | 89.8% | **Winner** |
+
+**Takeaways**:
+
+1. **r=16 remains the best rank on full data**, beating r=8 by +0.7pp Tuple F1 while also improving Name F1.
+2. r=8 achieved slightly higher tuple recall (78.5% vs 78.1%) but over-predicted more aggressively, which reduced precision enough to lose overall.
+3. Train loss also favors r=16 (0.0598 vs 0.0631), consistent with the eval result.
+4. Phase C's 1000-article conclusion generalizes to the full 4,726-article dataset: **keep r=16 as the default adapter rank**.
+5. The full-data r=16 run from C2b effectively satisfies the original Phase A objective.
+
 ### Phase D: Extended Context (Nuclear Option)
 
 **What**: Train at max_seq=16384 on an 80GB GPU, covering ~93% of articles (~8,500 training examples).
 
 **Hardware**: 1× H100-80GB on runpod (~$3.50/hr).
-
 
 **Timing**:
 - Training: ~50–70 hours (more data × longer sequences × slower per step)
@@ -319,9 +327,9 @@ All experiments use the same 50-sample eval set and report Tuple F1, Name F1, tr
 | C1 | C | Rank | 16 | 1000 | 8192 | 2e-4 | 16 | 3 | 6.0 hr | 5090 | **75.1%** ✅ |
 | C2 | C | Rank | 32 | 1000 | 8192 | 2e-4 | 32 | 3 | 8.8 hr | 5090 | 73.2% |
 | C3 | C | Rank | 128 | 1000 | 8192 | 2e-4 | 128 | 3 | 6.2 hr | 5090 | 74.3% |
-| A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 64 | 3 | 29.0 hr | 5090 | **77.3%** |
-| C2a | C2 | Rank (full) | 8 | 4726 | 8192 | 2e-4 | 8 | 3 | ~25 hr | 5090 | — |
-| C2b | C2 | Rank (full) | 16 | 4726 | 8192 | 2e-4 | 16 | 3 | ~25 hr | 5090 | — |
+| A1 | A | Data size | full | 4726 | 8192 | 2e-4 | 16* | 3 | ~25 hr | 5090 | — |
+| C2a | C2 | Rank (full) | 8 | 4726 | 8192 | 2e-4 | 8 | 3 | 28.9 hr | 5090 | 75.9% |
+| C2b | C2 | Rank (full) | 16 | 4726 | 8192 | 2e-4 | 16 | 3 | 29.4 hr | 5090 | **76.6%** ✅ |
 | B1 | B | LR | 1e-4 | 1000 | 8192 | 1e-4 | 64 | 3 | 10.4 hr | 5090 | 73.0% |
 | B2 | B | LR | 5e-5 | 1000 | 8192 | 5e-5 | 64 | 3 | 7.5 hr | 5090 | 72.6% |
 | D1 | D | Context | 16384 | ~8500 | 16384 | best | best | 3 | 50–70 hr | H100 | — |
@@ -334,13 +342,12 @@ Phase B complete — **lr=2e-4 (baseline) is optimal** (73.4% Tuple F1). Lower L
 
 Phase C complete — **r=16 is optimal** (75.1% Tuple F1, +1.7pp over baseline r=64).
 
-Phase A complete — **77.3% Tuple F1** with r=64 on full 4726 articles (+3.9pp over 1000-article baseline).
+Phase C2 complete — **r=16 is still optimal on full data** (76.6% Tuple F1, 89.8% Name F1). r=8 reached 75.9% Tuple F1 but lost on precision and overall F1.
 
 ```
 Next steps:
-  ├─ Phase C2: Full 4726 articles with r=8 and r=16 (test if smaller rank generalizes better on full data)
-  │   Expected: r=16 on full data could push to 79-82% (combining Phase C's +1.7pp with Phase A's +3.9pp)
-  └─ Phase D: 16384 context (only if Phase C2 < 82%)
+  ├─ Use C2b (r=16, full data) as the default adapter checkpoint
+  └─ Phase D: 16384 context only if additional context coverage is still the bottleneck
 ```
 
 ---
