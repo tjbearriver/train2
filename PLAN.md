@@ -242,7 +242,7 @@ Training the same 1000-article subset across different model architectures to co
 
 ### Cross-Model Results (1000 articles, same eval set)
 
-All models trained on the same 1000-article subset (subsampled from the 4,726-article training pool, seed=42). Evaluated on the same 50-sample eval set (from 526-article eval pool). Full-dataset rows (Qwen3-8B 4726-art, Qwen3.5-9B 4726-art) used all available training articles; all other runs used 1,000.
+All models trained on the same 1000-article subset (subsampled from the 4,726-article training pool, seed=42). Evaluated on the same 50-sample eval set (from 526-article eval pool). Full-dataset rows (Qwen3-8B 4726-art, Qwen3.5-9B 4726-art, Llama-3.2-3B 4726-art) used all available training articles; all other runs used 1,000.
 
 | Model | Train Loss | Train Time | Name F1 | Tuple F1 | Inference tok/s | VRAM | Notes |
 |-------|-----------|------------|---------|----------|----------------|------|-------|
@@ -254,6 +254,7 @@ All models trained on the same 1000-article subset (subsampled from the 4,726-ar
 | Qwen3.5-4B-Opus (1000 art) | 0.068 | 11.17 hr | 88.2% | 72.3% | TBD | ~14.6 GB | VLM, Claude-Opus distilled, ~215s/step, requires `</think>` fix |
 | Qwen3.5-4B (1000 art) | 0.068 | 11.16 hr | 86.6% | 71.7% | 9.3 | ~14.6 GB | VLM, ~228s/step |
 | Qwen3-8B (1000 art) | 0.112 | 2.92 hr | 86.1% | 71.2% | 16.1 | ~15.4 GB | Text-only, pre-quantized 4-bit, ~54s/step |
+| Llama-3.2-3B (4726 art) | 0.079 | 6.2 hr | 87.8% | 76.0% | TBD | ~10 GB | Text-only, QLoRA 4-bit, full dataset, RTX 5070 Ti |
 | Llama-3.2-3B (1000 art) | 0.111 | 0.59 hr | 85.3% | 71.2% | TBD | ~10 GB | Text-only, ~11s/step, trained on RTX 5090 |
 | Gemma3-4B (1000 art) | 0.126 | 4.30 hr | 84.0% | 66.3% | 6.3 | ~15.5 GB | VLM, ~82.7s/step |
 | Nanbeige4.1-3B (1000 art) | 0.124 | 0.73 hr | 81.2% | 64.4% | 23.1* | ~12.4 GB | Text-only, ~14.0s/step, *benchmarked on 5090 |
@@ -297,6 +298,22 @@ With `enable_thinking=False`, the prompt pre-closes the think block (`<think>\n\
 
 **Note**: This applies to all Qwen3.5 models (4B, 9B, 35B MoE, 122B). The training data contains no thinking tokens, so the model should never be prompted to think during inference.
 
+### llama3.2-3b every 500 article eval
+
+| Step | Articles | Name F1 | Name P | Name R | Tuple F1 | Tuple P | Tuple R | Format |
+|------|----------|---------|--------|--------|----------|---------|---------|--------|
+| base | 0 | 0.1% | 0.1% | 0.1% | 0.0% | 0.0% | 0.0% | 49.0% |
+| 94 | 501 | 83.4% | 82.4% | 84.4% | 64.5% | 63.7% | 65.3% | 100.0% |
+| 188 | 1003 | 76.4% | 68.2% | 86.9% | 65.9% | 58.8% | 74.9% | 100.0% |
+| 282 | 1504 | 87.8% | 87.4% | 88.1% | 74.8% | 74.5% | 75.2% | 100.0% |
+| 376 | 2005 | 88.8% | 86.7% | 91.1% | 71.2% | 69.5% | 73.1% | 100.0% |
+| 470 | 2507 | 87.6% | 86.4% | 88.9% | 76.2% | 75.1% | 77.3% | 100.0% |
+| 564 | 3008 | 87.3% | 85.6% | 89.0% | 77.1% | 75.6% | 78.6% | 100.0% |
+| 658 | 3509 | 88.0% | 86.9% | 89.2% | 76.2% | 75.2% | 77.3% | 100.0% |
+| 752 | 4011 | 88.5% | 87.7% | 89.2% | 75.6% | 75.0% | 76.3% | 100.0% |
+| **846** | **4512** | **89.3%** | **88.4%** | **90.2%** | **76.8%** | **76.0%** | **77.6%** | **100.0%** |
+| 888 | 4736 | 87.6% | 84.8% | 90.6% | 76.3% | 73.8% | 78.9% | 100.0% |
+
 ### Cross-Model Analysis
 - **Qwen3.5-27B**: Strong quality (Name F1=87.6%, Tuple F1=73.8%) but required H100 NVL (96GB VRAM) for bf16 LoRA training. Trained for 12.26 hours with lowest train loss (0.050). Quality exceeds all 1000-art models except the MoE 35B-A3B. Required `enable_thinking=False` for inference (same Qwen3.5 thinking mode gotcha). 2 samples skipped due to input length.
 - **Qwen3.5-35B-A3B (MoE)**: **Best quality on 1000 articles** — Name F1=89.0%, Tuple F1=76.1%, matching the full 4,726-article Qwen3-8B run quality. Trained with bf16 LoRA (r=16) on A100-80GB. MoE architecture means only 3B params active per token despite 36B total. Required `FastModel` (not `FastLanguageModel`) and `enable_thinking=False` for correct inference. 8 hours to train (~152s/step).
@@ -306,7 +323,8 @@ With `enable_thinking=False`, the prompt pre-closes the think block (`<think>\n\
 - **Qwen3.5-4B-Claude-Opus**: Fine-tuned from `Jackrong/Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled`, a Claude-4.6-Opus reasoning-distilled variant of Qwen3.5-4B. **Best Name F1 (88.2%) among all 1000-art models**, and Tuple F1=72.3% — outperforms the base Qwen3.5-4B (+1.6pp Name F1, +0.6pp Tuple F1). Same train loss (0.068) and similar training time (~670 min). The tokenizer's chat template always injects `<think>\n` regardless of `enable_thinking=False`, requiring a manual `</think>\n` append to force-close the thinking block. Inference is very slow (~1 tok/s) due to VLM + reasoning architecture overhead. 48/50 eval samples processed (2 skipped: input too long).
 - **Qwen3.5-4B**: Slightly outperforms Qwen3-8B on quality (Tuple F1 71.7% vs 71.2%) but ~4× slower to train and ~1.7× slower at inference due to VLM overhead.
 - **Qwen3.5-9B**: Best Tuple F1 (73.4%) among 1000-art runs. Requires RTX 5090 (32GB) for bf16 LoRA training — OOMs on 16GB GPUs. Train loss 0.063 (lowest). ~103s/step, 5.37 hours total. Quality is comparable to Qwen3.5-4B (73.4% vs 71.7% Tuple F1) but trains 2× faster per step and benefits from larger model capacity.
-- **Llama-3.2-3B**: Matches Qwen3-8B's Tuple F1 (71.2%) with less than half the parameters (3.2B vs 8B). Fastest to train by far (~11s/step, 35.5 min total vs 175 min for Qwen3-8B). Only ~10GB VRAM during training. Strong format compliance (100%). A compelling lightweight option.
+- **Llama-3.2-3B (4726 art)**: Full-dataset training improves over 1000-art by +4.8pp Tuple F1 (76.0%) and +2.5pp Name F1 (87.8%). Reaches near Qwen3-8B full-dataset quality (77.9% Tuple F1) with less than half the parameters (3.2B vs 8B). Trained locally on RTX 5070 Ti with QLoRA 4-bit in 6.2 hours (~25s/step). Only ~10GB VRAM. 100% format compliance.
+- **Llama-3.2-3B (1000 art)**: Matches Qwen3-8B's Tuple F1 (71.2%) with less than half the parameters (3.2B vs 8B). Fastest to train by far (~11s/step, 35.5 min total vs 175 min for Qwen3-8B). Only ~10GB VRAM during training. Strong format compliance (100%). A compelling lightweight option.
 - **Qwen3.5-4B Abliterated**: Abliteration severely damaged instruction-following capacity. Format compliance only 45.8% (many samples produce 0 valid CSV lines). Name F1=26.5%, Tuple F1=21.3%. Despite identical architecture and lower train loss (0.068 vs 0.068 for regular Qwen3.5-4B), the abliterated weights cannot recover structured extraction capability even after fine-tuning. Inference speed on 5090 (22.9 tok/s) is similar to Nanbeige4.1-3B on the same hardware. **Not recommended.**
 
 ### Adapter Locations
@@ -317,6 +335,7 @@ With `enable_thinking=False`, the prompt pre-closes the think block (`<think>\n\
 - Qwen3.5-27B (1000-art): `output/1000art_qwen35_27b/lora_adapter/` (bf16 LoRA, requires H100+, on RunPod)
 - Qwen3.5-35B-A3B (1000-art): `output/1000art_qwen35_35b/lora_adapter/` (bf16 LoRA, requires A100+)
 - Nanbeige4.1-3B (1000-art): `output/1000art_nanbeige41_3b/lora_adapter/`
+- Llama-3.2-3B (4726-art): `output/llama32_3b_full/lora_adapter/`
 - Llama-3.2-3B (1000-art): `output/1000art_llama32_3b/lora_adapter/`
 - Qwen3.5-4B-Claude-Opus (1000-art): `output/1000art_qwen35_4b_opus/lora_adapter/`
 - Qwen3.5-4B Abliterated (1000-art): `output/1000art_qwen35_4b_abliterated/lora_adapter/`
@@ -397,5 +416,18 @@ FastLanguageModel.for_inference(model)
 ```
 
 ---
-
-*Review this plan and let me know what changes you'd like before I begin execution.*
+# Runpod Best Practices
+- use python sdk (use uv with '--with" for running and managing deps)
+- provision machines yourself using these guidelines:
+    - 1 x 5090
+    - secure cloud
+    - 250GB disk
+    - use on-demand (not spot)
+    - template: runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+- always run python unbuffered so that you can track logs (especially during the evaluation phase)
+- make logs easy to track for me in case I want to probe them independently
+- use rclone for downloading from runpod
+- upload code+data via rsync/scp over SSH to the pod
+- continuously monitor the training and give me regular updates every 15min
+- each phase gets its own output directory so multiple phases can run in parallel on separate pods
+- when finished with a pod, download all of the important artifacts and then delete the pod
